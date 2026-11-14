@@ -36,12 +36,12 @@ Name: "desktopicon"; Description: "Ярлык на рабочем столе"; G
 
 [Files]
 Source: "..\dist\fastagg.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "runtimes\*"; DestDir: "{userprofile}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist uninsneveruninstall
+Source: "runtimes\*"; DestDir: "{%USERPROFILE}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist uninsneveruninstall
 #ifdef BundleCuda
-Source: "cuda\*.zip"; DestDir: "{userprofile}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion
+Source: "cuda\*.zip"; DestDir: "{%USERPROFILE}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion
 #endif
 ; Архивы CUDA, положенные рядом с setup.exe в папку cuda\, ставятся без пересборки установщика.
-Source: "{src}\cuda\*"; DestDir: "{userprofile}\.fast_aggregation\runtimes\b12359"; Flags: external skipifsourcedoesntexist recursesubdirs uninsneveruninstall
+Source: "{src}\cuda\*"; DestDir: "{%USERPROFILE}\.fast_aggregation\runtimes\b12359"; Flags: external skipifsourcedoesntexist recursesubdirs uninsneveruninstall
 
 [Icons]
 Name: "{group}\Координатор"; Filename: "{app}\{#MyAppExe}"; Parameters: "coordinator"
