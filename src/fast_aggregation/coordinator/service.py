@@ -371,9 +371,33 @@ class CoordinatorService:
         folder = self.models_dir
         if folder is None or not folder.is_dir():
             return []
+        from fast_aggregation.cluster.fit import ModelNeed, assert_fits
+        from fast_aggregation.models_pull import group_local_gguf
+
         rows = []
-        for path in sorted(folder.glob("*.gguf")):
-            rows.append(self.describe_model(str(path), ctx=ctx, allow_cpu=allow_cpu, reserve_mb=reserve_mb))
+        files = sorted(path for path in folder.rglob("*.gguf") if path.is_file() and not path.name.endswith(".partial"))
+        for parts in group_local_gguf(files):
+            primary = parts[0]
+            row = self.describe_model(str(primary), ctx=ctx, allow_cpu=allow_cpu, reserve_mb=reserve_mb)
+            total = sum(path.stat().st_size for path in parts)
+            row["parts"] = [path.name for path in parts]
+            row["size_mib"] = round(total / (1024 * 1024), 1)
+            if len(parts) > 1 and row.get("kv_mib") is not None:
+                weight_mb = total / (1024 * 1024)
+                kv_mb = float(row["kv_mib"] or 0)
+                need = ModelNeed(weight_mb, kv_mb, weight_mb + kv_mb, row.get("note") or "")
+                try:
+                    plan = self.preview_plan(allow_cpu=allow_cpu, reserve_mb=reserve_mb, need_mb=need.total_mb)
+                    row["note"] = assert_fits(plan, need)
+                    row["fits"] = True
+                    row["error"] = None
+                    row["plan"] = plan.to_dict()
+                except FastAggError as exc:
+                    row["fits"] = False
+                    row["error"] = str(exc)
+                row["weight_mib"] = round(weight_mb, 1)
+                row["need_mib"] = round(need.total_mb, 1)
+            rows.append(row)
         return rows
 
     def describe_model(self, path: str, *, ctx: int, allow_cpu: bool, reserve_mb: int) -> dict:
@@ -528,6 +552,18 @@ class CoordinatorService:
             except FastAggError as exc:
                 self.registry.mark_error(node_id, str(exc))
         self._started_remote = []
+
+    def model_puller(self):
+        from fast_aggregation.models_pull import ModelPuller
+
+        folder = self.models_dir or (self.data_dir / "models")
+        folder.mkdir(parents=True, exist_ok=True)
+        self.models_dir = folder
+        puller = getattr(self, "_model_puller", None)
+        if puller is None or puller.folder != folder:
+            puller = ModelPuller(folder, self.data_dir)
+            self._model_puller = puller
+        return puller
 
     def _validate_model(self, model_path: str | None, hf_repo: str | None) -> None:
         if bool(model_path) == bool(hf_repo):

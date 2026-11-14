@@ -103,6 +103,13 @@ def _dispatch(argv: list[str] | None = None) -> int:
     join.add_argument("--rpc-port", type=int, default=RPC_PORT)
     join.add_argument("--name", default="")
 
+    pull = sub.add_parser("pull", help="Скачать GGUF с Hugging Face в папку моделей")
+    pull.add_argument("url", help="Ссылка на файл .gguf или на репозиторий")
+    pull.add_argument("--file", default="", help="Имя файла или подпись квантования, если в репозитории их несколько")
+    pull.add_argument("--token", default="", help="Токен Hugging Face для закрытой модели. Сохраняется локально")
+    pull.add_argument("--models-dir", default="")
+    pull.add_argument("--data-dir", default="")
+
     imported = sub.add_parser("runtime-import", help="Положить локальный архив llama.cpp в кэш, без интернета")
     imported.add_argument("path")
     imported.add_argument("--tag", default=DEFAULT_LLAMA_RELEASE)
@@ -142,6 +149,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return _scan_net(args)
     if args.command == "runtime-import":
         return _runtime_import(args)
+    if args.command == "pull":
+        return _pull(args)
     if args.command == "tray":
         return _tray(args)
     parser.error("Неизвестная команда")
@@ -402,7 +411,8 @@ def _run_coordinator(
     service.public_port = choice.port
     service.trusted_bundle = data / "trusted-bundle.pem"
     service.allow_download = bool(args.allow_download)
-    service.models_dir = Path(args.models_dir) if args.models_dir else None
+    service.models_dir = Path(args.models_dir) if args.models_dir else (data / "models")
+    service.models_dir.mkdir(parents=True, exist_ok=True)
     discovery = DiscoveryService(
         node.announce() if node is not None else None,
         port=args.discovery_port,
@@ -685,6 +695,80 @@ def _tray(args: argparse.Namespace) -> int:
         on_quit=stop_server if args.role == "node" else None,
     )
     return 0
+
+
+def _pull(args: argparse.Namespace) -> int:
+    import time
+
+    from fast_aggregation.models_pull import ModelPuller, RemoteFile, save_token
+
+    data = _data_dir(args)
+    folder = Path(args.models_dir) if args.models_dir else data / "models"
+    folder.mkdir(parents=True, exist_ok=True)
+    if args.token:
+        save_token(data, args.token)
+    puller = ModelPuller(folder, data)
+    try:
+        try:
+            inspected = puller.inspect(args.url)
+        except FastAggError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        choices = inspected["choices"]
+        wanted = args.file.strip()
+        if wanted:
+            selected = [
+                choice
+                for choice in choices
+                if choice["label"] == wanted
+                or any(item["path"] == wanted or Path(item["path"]).name == wanted for item in choice["files"])
+            ]
+            if not selected:
+                print("Такого файла нет. Доступны:", file=sys.stderr)
+                for choice in choices:
+                    print(f"  {choice['label']}", file=sys.stderr)
+                return 2
+        elif len(choices) > 1:
+            print("В репозитории несколько GGUF. Повторите с --file и одной из подписей:", file=sys.stderr)
+            for choice in choices:
+                size = choice.get("size")
+                suffix = f"{size / (1024 * 1024):.1f} МиБ" if isinstance(size, int) else "размер неизвестен"
+                print(f"  {choice['label']} — {suffix}", file=sys.stderr)
+            return 2
+        else:
+            selected = choices
+        files = [
+            RemoteFile(item["path"], item["url"], item.get("size"), item.get("sha256"))
+            for choice in selected
+            for item in choice["files"]
+        ]
+        try:
+            puller.start(files)
+        except FastAggError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        while True:
+            view = puller.view()
+            total = view.get("bytes_total") or 0
+            done = view.get("bytes_done") or 0
+            speed = (view.get("speed_bps") or 0) / (1024 * 1024)
+            print(
+                f"\r{view.get('name') or ''} {done}/{total} байт, {speed:.1f} МиБ/с, {view.get('status')}",
+                end="",
+                flush=True,
+            )
+            if view.get("status") in {"done", "error", "cancelled"}:
+                print()
+                break
+            time.sleep(0.4)
+        if view.get("status") != "done":
+            print(view.get("error") or view.get("status"), file=sys.stderr)
+            return 1
+        for path in view.get("paths") or []:
+            print(path)
+        return 0
+    finally:
+        puller.close()
 
 
 def _runtime_import(args: argparse.Namespace) -> int:

@@ -64,6 +64,19 @@ class ScanBody(BaseModel):
     port: int = 47000
 
 
+class HfInspectBody(BaseModel):
+    url: str = Field(min_length=1)
+    token: str = ""
+
+
+class HfTokenBody(BaseModel):
+    token: str = ""
+
+
+class HfPullBody(BaseModel):
+    files: list[dict]
+
+
 class PlanQuery(BaseModel):
     allow_cpu: bool = False
     reserve_mb: int = DEFAULT_VRAM_RESERVE_MB
@@ -157,6 +170,59 @@ def create_coordinator_app(
             "directory": str(service.models_dir) if service.models_dir else None,
             "models": service.list_local_models(ctx, allow_cpu, reserve_mb),
         }
+
+    @app.get("/api/models/hf/token")
+    def hf_token_state() -> dict:
+        from fast_aggregation.models_pull import load_token
+
+        return {"saved": bool(load_token(service.data_dir))}
+
+    @app.post("/api/models/hf/token")
+    def hf_token_save(body: HfTokenBody) -> dict:
+        from fast_aggregation.models_pull import save_token
+
+        save_token(service.data_dir, body.token)
+        return {"saved": bool(body.token.strip())}
+
+    @app.post("/api/models/hf/inspect")
+    def hf_inspect(body: HfInspectBody) -> dict:
+        from fast_aggregation.models_pull import save_token
+
+        if body.token.strip():
+            save_token(service.data_dir, body.token)
+        try:
+            return service.model_puller().inspect(body.url)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/models/pull")
+    def hf_pull(body: HfPullBody) -> dict:
+        from fast_aggregation.models_pull import files_from_payload
+
+        try:
+            files = files_from_payload(body.files)
+            return service.model_puller().start(files)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/models/pull")
+    def hf_pull_state() -> dict:
+        puller = getattr(service, "_model_puller", None)
+        if puller is None:
+            return {"status": "idle", "directory": str(service.models_dir) if service.models_dir else None}
+        return puller.view()
+
+    @app.post("/api/models/pull/pause")
+    def hf_pause() -> dict:
+        return service.model_puller().pause()
+
+    @app.post("/api/models/pull/resume")
+    def hf_resume() -> dict:
+        return service.model_puller().resume()
+
+    @app.post("/api/models/pull/cancel")
+    def hf_cancel() -> dict:
+        return service.model_puller().cancel()
 
     @app.post("/api/models/preview")
     def preview_model(body: ModelQuery) -> dict:

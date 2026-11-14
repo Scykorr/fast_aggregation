@@ -58,6 +58,9 @@
     .bubble.user { background: #243024; }
     .bubble.assistant { background: #121812; border: 1px solid var(--line); }
     pre { white-space: pre-wrap; background: #0e130d; border-radius: 8px; padding: 10px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+    .bar { height: 10px; background: #0e130d; border-radius: 6px; overflow: hidden; margin: 8px 0; }
+    .bar span { display: block; height: 100%; width: 0; background: var(--accent); }
+    #hf-choices { display: grid; gap: 8px; margin-top: 10px; }
     @media (max-width: 800px) { .chat-layout { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -118,8 +121,21 @@
         <div id="recs"></div>
       </section>
       <section>
+        <h2>Скачать модель</h2>
+        <p class="muted">Интернет нужен только для этой загрузки. Вставьте ссылку на файл .gguf или на репозиторий, затем выберите квантование. Токен нужен лишь для закрытых моделей и хранится на этом компьютере.</p>
+        <form id="pull-form">
+          <label>Ссылка<input id="hf-url" type="text" placeholder="организация/модель или ссылка на файл .gguf" /></label>
+          <label>Токен, если модель закрытая<input id="hf-token" type="password" autocomplete="off" /></label>
+          <button type="submit">Показать файлы</button>
+        </form>
+        <div id="hf-choices"></div>
+        <div id="pull-box"></div>
+        <div id="pull-msg" class="bad"></div>
+      </section>
+      <section>
         <h2>Локальные GGUF</h2>
-        <p class="muted">Папка задаётся при запуске координатора флагом --models-dir. Файлы не скачиваются.</p>
+        <p id="models-dir" class="muted">Папка моделей координатора. Её можно сменить флагом --models-dir.</p>
+        <div id="file-msg" class="bad"></div>
         <div id="files">Папка не задана.</div>
       </section>
     </div>
@@ -254,7 +270,7 @@
           <td>${mb(item.size_mib)}</td>
           <td>${mb(item.need_mib)}</td>
           <td class="${item.fits ? "ok" : "bad"}">${item.fits ? "влезет" : esc(item.error || "не влезет")}</td>
-          <td><button class="ghost" data-start="${esc(item.path)}">Запустить</button></td>
+          <td><button class="ghost" data-start="${esc(item.path)}">Развернуть</button></td>
         </tr>`).join("") + "</tbody></table>";
     }
 
@@ -286,7 +302,54 @@
       const files = await fetch(`/api/models?ctx=${ctx}&allow_cpu=${allow}`);
       const body = await files.json();
       models = body.models || [];
+      if (body.directory) $("#models-dir").textContent = "Папка: " + body.directory;
       render();
+    }
+
+    let pullChoices = [];
+    let pullTimer = null;
+    function fmtBytes(value) {
+      if (value == null) return "н/д";
+      return mb(value / (1024 * 1024));
+    }
+    function renderPull(job) {
+      if (!job || !job.status || job.status === "idle") {
+        $("#pull-box").innerHTML = "";
+        return;
+      }
+      const total = job.bytes_total || 0;
+      const pct = total ? Math.min(100, Math.round(100 * job.bytes_done / total)) : 0;
+      const speed = job.speed_bps ? (job.speed_bps / (1024 * 1024)).toFixed(1) + " МиБ/с" : "скорость считается";
+      const eta = job.eta_sec == null ? "" : " · ещё " + Math.max(0, Math.round(job.eta_sec)) + " с";
+      const controls = job.status === "running"
+        ? "<button type='button' id='pull-pause' class='ghost'>Пауза</button> <button type='button' id='pull-cancel' class='ghost'>Отмена</button>"
+        : job.status === "paused"
+          ? "<button type='button' id='pull-resume'>Продолжить</button> <button type='button' id='pull-cancel' class='ghost'>Отмена</button>"
+          : "";
+      $("#pull-box").innerHTML = `<div>${esc(job.name)} · ${esc(job.status)} · ${fmtBytes(job.bytes_done)} / ${fmtBytes(job.bytes_total)}${eta}</div>
+        <div class="bar"><span style="width:${pct}%"></span></div>
+        <div class="muted">${esc(speed)} · файл ${job.file_index || 0} из ${job.file_count || 0}</div>
+        ${controls}`;
+      const pause = document.querySelector("#pull-pause");
+      const resume = document.querySelector("#pull-resume");
+      const cancel = document.querySelector("#pull-cancel");
+      if (pause) pause.onclick = () => fetch("/api/models/pull/pause", {method: "POST"});
+      if (resume) resume.onclick = () => fetch("/api/models/pull/resume", {method: "POST"});
+      if (cancel) cancel.onclick = () => fetch("/api/models/pull/cancel", {method: "POST"});
+    }
+    function watchPull() {
+      if (pullTimer) return;
+      pullTimer = setInterval(async () => {
+        const response = await fetch("/api/models/pull");
+        const job = await response.json();
+        renderPull(job);
+        if (["idle", "done", "error", "cancelled"].includes(job.status)) {
+          clearInterval(pullTimer);
+          pullTimer = null;
+          if (job.status === "error") $("#pull-msg").textContent = job.error || "Скачивание не удалось";
+          if (job.status === "done") refresh();
+        }
+      }, 700);
     }
 
     $("#manual").addEventListener("submit", async (event) => {
@@ -334,6 +397,45 @@
       refresh();
     });
     $("#ctx-form").addEventListener("submit", (event) => { event.preventDefault(); refresh(); });
+    $("#pull-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("#pull-msg").textContent = "";
+      const response = await fetch("/api/models/hf/inspect", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({url: $("#hf-url").value, token: $("#hf-token").value})
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        $("#pull-msg").textContent = data.detail || "Ссылку разобрать не удалось";
+        $("#hf-choices").innerHTML = "";
+        return;
+      }
+      pullChoices = data.choices || [];
+      $("#hf-choices").innerHTML = pullChoices.map((choice, index) => {
+        const size = choice.size == null ? "размер неизвестен" : mb(choice.size / (1024 * 1024));
+        return `<button type="button" class="ghost" data-choice="${index}">Скачать ${esc(choice.label)} · ${esc(size)}</button>`;
+      }).join("");
+    });
+    $("#hf-choices").addEventListener("click", async (event) => {
+      const index = event.target.dataset && event.target.dataset.choice;
+      if (index == null || index === "") return;
+      const choice = pullChoices[Number(index)];
+      if (!choice) return;
+      $("#pull-msg").textContent = "";
+      const response = await fetch("/api/models/pull", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({files: choice.files})
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        $("#pull-msg").textContent = data.detail || "Скачивание не началось";
+        return;
+      }
+      renderPull(data);
+      watchPull();
+    });
     $("#files").addEventListener("click", async (event) => {
       const path = event.target.dataset && event.target.dataset.start;
       if (!path) return;
@@ -344,7 +446,8 @@
         body: JSON.stringify({model_path: path, ctx_size: Number($("#ctx").value) || 4096, allow_cpu: $("#allow-cpu").checked, parallel: 1, reserve_mb: 512})
       });
       const data = await response.json();
-      if (!response.ok) $("#node-msg").textContent = data.detail || "Запуск не удался";
+      if (!response.ok) $("#file-msg").textContent = data.detail || "Развернуть модель не удалось";
+      else $("#file-msg").textContent = "";
       event.target.disabled = false;
       refresh();
     });
@@ -424,6 +527,10 @@
 
     refresh();
     setInterval(refresh, 2000);
+    fetch("/api/models/pull").then((response) => response.json()).then((job) => {
+      renderPull(job);
+      if (job.status === "running" || job.status === "paused") watchPull();
+    }).catch(() => {});
   </script>
 </body>
 </html>
