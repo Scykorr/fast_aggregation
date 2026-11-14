@@ -136,7 +136,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cuda-build",
         default="",
-        help="Сборка CUDA, если бэкенд cuda: на Windows x64 это 12.4 или 13.5",
+        help="auto, 12.4 или 13.5. auto смотрит драйвер в nvidia-smi: до 580 берёт 12.4, с 580 — 13.5",
     )
     parser.add_argument("--release", default=DEFAULT_LLAMA_RELEASE, help="Тег сборки llama.cpp, один на весь кластер")
     parser.add_argument("--data-dir", default="")
@@ -161,6 +161,14 @@ def _scan(as_json: bool) -> int:
             print(f"  {gpu.name} [{gpu.vendor}] свободно {free}, всего {total}, источник {gpu.source}")
     else:
         print("GPU: не обнаружены")
+    nvidia_driver = next((gpu.driver for gpu in resources.gpus if gpu.vendor == "nvidia" and gpu.driver), None)
+    if resources.os_name.lower() == "windows" and resources.arch == "x64" and any(
+        gpu.vendor == "nvidia" for gpu in resources.gpus
+    ):
+        from fast_aggregation.runtime.cuda_select import select_windows_cuda_build
+
+        choice = select_windows_cuda_build("auto", nvidia_driver)
+        print(f"CUDA: {choice.reason}")
     print("Бэкенды llama.cpp:")
     for backend in resources.backends:
         mark = "да" if backend.available else "нет"

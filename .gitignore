@@ -8,6 +8,8 @@ __pycache__/
 venv/
 dist/
 build/
+packaging/runtimes/
+packaging/cuda/
 .fast_aggregation/
 *.log
 android/.gradle/

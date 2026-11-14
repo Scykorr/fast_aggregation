@@ -62,6 +62,8 @@ class NodeService:
         self._deep_probe = prober is None
         self.rpc_backend: str | None = None
         self.rpc_error: str | None = None
+        self.cuda_build_used: str | None = None
+        self.cuda_reason: str | None = None
         self.resources = self.refresh_resources()
 
     def refresh_resources(self) -> MachineResources:
@@ -103,6 +105,8 @@ class NodeService:
             "rpc": {
                 "running": running,
                 "backend": self.rpc_backend,
+                "cuda_build": self.cuda_build_used,
+                "cuda_reason": self.cuda_reason,
                 "error": self.rpc_error,
                 "log_tail": process.tail(40) if process else [],
             },
@@ -116,7 +120,8 @@ class NodeService:
                 backend or self.settings.preferred_backend,
                 self.resources.os_name,
             )
-            folder = self._fetch_runtime(release, chosen)
+            cuda_build = self._resolve_cuda_build(chosen)
+            folder = self._fetch_runtime(release, chosen, cuda_build)
             binary = executable(folder, self.resources.os_name, "rpc")
             self._stop_locked()
             log_path = self.settings.data_dir / "logs" / "rpc-server.log"
@@ -158,7 +163,21 @@ class NodeService:
             self._process.stop()
             self._process = None
 
-    def _fetch_runtime(self, release: str, backend: str) -> Path:
+    def _resolve_cuda_build(self, backend: str) -> str | None:
+        if backend != "cuda":
+            return None
+        from fast_aggregation.runtime.cuda_select import select_windows_cuda_build
+
+        preference = self.settings.cuda_build or "auto"
+        if self.resources.os_name.lower() != "windows" or self.resources.arch != "x64":
+            return None if preference in {"", "auto"} else preference
+        driver = next((gpu.driver for gpu in self.resources.gpus if gpu.vendor == "nvidia" and gpu.driver), None)
+        choice = select_windows_cuda_build(preference, driver)
+        self.cuda_build_used = choice.build
+        self.cuda_reason = choice.reason
+        return choice.build
+
+    def _fetch_runtime(self, release: str, backend: str, cuda_build: str | None = None) -> Path:
         if self._runtime_fetcher is not None:
             return self._runtime_fetcher(release, backend)
         try:
@@ -169,7 +188,7 @@ class NodeService:
                 backend,
                 self.settings.data_dir / "runtimes",
                 role="rpc",
-                cuda_build=self.settings.cuda_build,
+                cuda_build=cuda_build,
                 allow_download=self.settings.allow_download,
                 mirror=self.settings.runtime_mirror,
             )

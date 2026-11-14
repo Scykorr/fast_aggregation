@@ -13,7 +13,10 @@ AppPublisher=fastagg
 DefaultDirName={autopf}\fastagg
 DefaultGroupName=fastagg
 OutputDir=..\dist\installer
-OutputBaseFilename=fastagg-setup-0.1.0
+#ifndef SetupBaseName
+#define SetupBaseName "fastagg-setup-0.1.0"
+#endif
+OutputBaseFilename={#SetupBaseName}
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64
@@ -34,6 +37,11 @@ Name: "desktopicon"; Description: "Ярлык на рабочем столе"; G
 [Files]
 Source: "..\dist\fastagg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "runtimes\*"; DestDir: "{userprofile}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist uninsneveruninstall
+#ifdef BundleCuda
+Source: "cuda\*.zip"; DestDir: "{userprofile}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion
+#endif
+; Архивы CUDA, положенные рядом с setup.exe в папку cuda\, ставятся без пересборки установщика.
+Source: "{src}\cuda\*"; DestDir: "{userprofile}\.fast_aggregation\runtimes\b12359"; Flags: external skipifsourcedoesntexist recursesubdirs uninsneveruninstall
 
 [Icons]
 Name: "{group}\Координатор"; Filename: "{app}\{#MyAppExe}"; Parameters: "coordinator"

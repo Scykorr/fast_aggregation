@@ -116,11 +116,45 @@ def ensure_runtime(
             )
     extract_archive(archive, folder)
     _mark_executables(folder, system)
+    if _os(system) == "windows" and backend.strip().lower() == "cuda":
+        _overlay_cudart(folder, cache_root, asset.tag, cuda_build or "12.4")
     if not _has_binary(folder, system, role):
         raise RuntimeError_(
             f"В архиве {asset.name} нет бинарника для роли «{role}». Каталог: {folder}"
         )
     return folder
+
+
+def install_cudart_dlls(target_dir: Path, archive: Path) -> int:
+    """Кладёт DLL из архива cudart рядом с ggml-rpc-server."""
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    with zipfile.ZipFile(archive) as bundle:
+        for info in bundle.infolist():
+            if info.is_dir() or not info.filename.lower().endswith(".dll"):
+                continue
+            name = Path(info.filename.replace("\\", "/")).name
+            if not name:
+                continue
+            with bundle.open(info, "r") as source, (target_dir / name).open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+            copied += 1
+    return copied
+
+
+def _overlay_cudart(folder: Path, cache_root: Path, tag: str, build: str) -> None:
+    from fast_aggregation.runtime.cuda_select import cudart_archive_name
+
+    name = cudart_archive_name(build)
+    staged = find_staged_archive(cache_root, name) or find_staged_archive(cache_root / tag, name)
+    if staged is None:
+        return
+    try:
+        target = executable(folder, "windows", "rpc").parent
+    except RuntimeError_:
+        target = folder
+    install_cudart_dlls(target, staged)
 
 
 def executable(folder: Path, system: str, role: str) -> Path:
