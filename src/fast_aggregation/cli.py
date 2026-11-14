@@ -89,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
     scan_net.add_argument("cidr")
     scan_net.add_argument("--port", type=int, default=NODE_HTTP_PORT)
 
+    tray = sub.add_parser("tray", help="Иконка в трее: статус и открытие консоли")
+    tray.add_argument("--role", choices=("node", "coordinator"), default="node")
+    tray.add_argument("--open", action="store_true")
+    tray.add_argument("--insecure-http", action="store_true")
+
     doctor = sub.add_parser("doctor", help="Проверка окружения и, по желанию, бинарника llama.cpp")
     doctor.add_argument("--fetch", action="store_true", help="Скачать CPU-сборку закреплённого релиза и показать версию")
     doctor.add_argument("--release", default=DEFAULT_LLAMA_RELEASE)
@@ -114,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
         return _scan_net(args)
     if args.command == "runtime-import":
         return _runtime_import(args)
+    if args.command == "tray":
+        return _tray(args)
     parser.error("Неизвестная команда")
     return 2
 
@@ -372,6 +379,62 @@ def _join(args: argparse.Namespace) -> int:
         },
     )
     print("Сопряжение сохранено. Запустите: fastagg node")
+    return 0
+
+
+def _filled_namespace(**overrides: object) -> argparse.Namespace:
+    values: dict[str, object] = {
+        "name": "",
+        "bind": "0.0.0.0",
+        "advertise": "",
+        "rpc_port": RPC_PORT,
+        "discovery_port": DISCOVERY_PORT,
+        "backend": "auto",
+        "vram_mb": 0,
+        "cuda_build": "",
+        "release": DEFAULT_LLAMA_RELEASE,
+        "data_dir": "",
+        "open": False,
+        "insecure_http": False,
+        "allow_download": False,
+        "runtime_from": "",
+        "port": COORDINATOR_PORT,
+        "engine_port": ENGINE_PORT,
+        "no_participate": False,
+        "models_dir": "",
+        "http_port": NODE_HTTP_PORT,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def _tray(args: argparse.Namespace) -> int:
+    import threading
+    import urllib.request
+
+    from fast_aggregation.tray import run_tray
+
+    child = _filled_namespace(open=args.open, insecure_http=args.insecure_http)
+    target = _serve_node if args.role == "node" else _serve_coordinator
+    threading.Thread(target=target, args=(child,), name="fa-tray-server", daemon=True).start()
+    scheme = "http" if args.open or args.insecure_http else "https"
+    url = f"{scheme}://127.0.0.1:{COORDINATOR_PORT if args.role == 'coordinator' else NODE_HTTP_PORT}"
+
+    def status() -> str:
+        try:
+            context = None
+            if url.startswith("https://"):
+                import ssl
+
+                context = ssl._create_unverified_context()
+            with urllib.request.urlopen(url + "/health", timeout=2, context=context) as response:
+                if response.status == 200:
+                    return "работает"
+        except OSError:
+            return "запускается"
+        return "нет ответа"
+
+    run_tray(url if args.role == "coordinator" else None, status)
     return 0
 
 
