@@ -17,7 +17,7 @@ from fast_aggregation.cluster.fit import assert_fits, estimate_need
 from fast_aggregation.cluster.health import shed_reasons
 from fast_aggregation.cluster.planner import plan_placement
 from fast_aggregation.cluster.registry import NodeRegistry
-from fast_aggregation.constants import DEFAULT_LLAMA_RELEASE, ENGINE_PORT, NODE_HTTP_PORT
+from fast_aggregation.constants import COORDINATOR_PORT, DEFAULT_LLAMA_RELEASE, ENGINE_PORT, NODE_HTTP_PORT
 from fast_aggregation.coordinator.client import HttpNodeClient, NodeClient
 from fast_aggregation.discovery.scan import hosts_in_cidr, scan_tcp
 from fast_aggregation.errors import FastAggError, RuntimeError_
@@ -81,7 +81,7 @@ class CoordinatorService:
         self._pair_fails = 0
         self._pair_locked_until = 0.0
         self.public_host = "127.0.0.1"
-        self.public_port = 8080
+        self.public_port = COORDINATOR_PORT
         self.trusted_bundle: Path | None = None
         self.models_dir: Path | None = None
         self.allow_download = False

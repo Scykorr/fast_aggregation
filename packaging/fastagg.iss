@@ -58,7 +58,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-discovery"" dir=in action=allow protocol=UDP localport=45221 profile=private"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-node"" dir=in action=allow protocol=TCP localport=47000 profile=private"; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-rpc"" dir=in action=allow protocol=TCP localport=50052 profile=private"; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-dashboard"" dir=in action=allow protocol=TCP localport=8080 profile=private"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=fastagg-dashboard & netsh advfirewall firewall add rule name=fastagg-dashboard dir=in action=allow protocol=TCP localport=47080-47099 profile=private"; Flags: runhidden
 Filename: "{app}\{#MyAppExe}"; Description: "Открыть координатор"; Parameters: "coordinator"; Flags: nowait postinstall skipifsilent; Tasks: rolecoord
 
 [UninstallRun]

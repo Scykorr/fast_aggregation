@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import platform
 import subprocess
 import sys
@@ -55,8 +56,7 @@ def _console_safe() -> None:
             pass
 
 
-def main(argv: list[str] | None = None) -> int:
-    _console_safe()
+def _dispatch(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="fastagg",
         description="Распределённый запуск LLM в локальной сети через llama.cpp RPC.",
@@ -72,11 +72,20 @@ def main(argv: list[str] | None = None) -> int:
     node.add_argument("--open", action="store_true", help="Без токена. Только своя лаборатория")
     node.add_argument("--insecure-http", action="store_true", help="HTTP без TLS")
     node.add_argument("--allow-download", action="store_true", help="Разрешить скачивание llama.cpp из интернета")
-    node.add_argument("--runtime-from", default="", help="Базовый URL раздачи сборок координатора, обычно https://host:8080/runtime")
+    node.add_argument(
+        "--runtime-from",
+        default="",
+        help="Базовый URL раздачи сборок координатора, обычно https://host:47080/runtime",
+    )
 
     coord = sub.add_parser("coordinator", help="Координатор, дашборд и OpenAI-совместимый API")
     _common(coord)
-    coord.add_argument("--port", type=int, default=COORDINATOR_PORT)
+    coord.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Порт дашборда. По умолчанию 47080 или порт из coordinator.json. Если занят — следующий свободный до 47099",
+    )
     coord.add_argument("--engine-port", type=int, default=ENGINE_PORT)
     coord.add_argument("--no-participate", action="store_true", help="Не отдавать ресурсы этой машины в план")
     coord.add_argument("--open", action="store_true", help="Без токена и без TLS. Только своя лаборатория")
@@ -137,6 +146,18 @@ def main(argv: list[str] | None = None) -> int:
         return _tray(args)
     parser.error("Неизвестная команда")
     return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    _console_safe()
+    try:
+        return _dispatch(argv)
+    except Exception as exc:
+        from fast_aggregation.instance import wait_before_close
+
+        print(f"fastagg остановился: {exc}", file=sys.stderr)
+        wait_before_close()
+        return 1
 
 
 def _common(parser: argparse.ArgumentParser) -> None:
@@ -230,10 +251,104 @@ def _serve_node(args: argparse.Namespace) -> int:
 
 
 def _serve_coordinator(args: argparse.Namespace) -> int:
-    if args.port == args.engine_port:
-        print("Порт дашборда и порт llama-server должны различаться", file=sys.stderr)
-        return 2
+    from fast_aggregation.instance import (
+        InstanceLock,
+        attach_message,
+        choose_coordinator_port,
+        configure_log,
+        format_owners,
+        health_ok,
+        preferred_port,
+        read_state,
+        wait_before_close,
+        write_state,
+    )
+
     data = _data_dir(args)
+    log_path = configure_log("coordinator")
+    pause = bool(getattr(args, "pause", True))
+    own_lock = not getattr(args, "lock_held", False)
+    lock = InstanceLock(data / "coordinator.lock")
+    if own_lock and not lock.try_acquire():
+        return _coordinator_already_running(data, pause, log_path, attach_message, health_ok, read_state, wait_before_close)
+    try:
+        return _run_coordinator(
+            args,
+            data,
+            log_path,
+            pause,
+            choose_coordinator_port,
+            format_owners,
+            preferred_port,
+            read_state,
+            wait_before_close,
+            write_state,
+        )
+    finally:
+        if own_lock:
+            lock.release()
+
+
+def _coordinator_already_running(data, pause, log_path, attach_message, health_ok, read_state, wait_before_close) -> int:
+    import webbrowser
+
+    state = read_state(data)
+    url = str(state.get("dashboard_url") or "")
+    if url and health_ok(url):
+        print(attach_message(state))
+        try:
+            webbrowser.open(url)
+        except OSError:
+            pass
+        wait_before_close(pause)
+        return 0
+    message = str(state.get("error") or "Координатор уже запускается, но дашборд ещё не отвечает.")
+    print(message, file=sys.stderr)
+    print(f"Журнал: {log_path}", file=sys.stderr)
+    wait_before_close(pause)
+    return 1
+
+
+def _record_error(data, write_state, read_state, message: str) -> None:
+    state = read_state(data)
+    state["error"] = message
+    state["pid"] = os.getpid()
+    write_state(data, state)
+
+
+def _run_coordinator(
+    args,
+    data,
+    log_path,
+    pause,
+    choose_coordinator_port,
+    format_owners,
+    preferred_port,
+    read_state,
+    wait_before_close,
+    write_state,
+) -> int:
+    saved = read_state(data)
+    saved_port = saved.get("port")
+    try:
+        saved_port = int(saved_port) if saved_port else None
+    except (TypeError, ValueError):
+        saved_port = None
+    wanted = preferred_port(args.port, saved_port)
+    if wanted == args.engine_port:
+        message = "Порт дашборда и порт llama-server должны различаться"
+        print(message, file=sys.stderr)
+        wait_before_close(pause)
+        return 2
+    try:
+        choice = choose_coordinator_port(wanted, avoid={args.engine_port})
+    except FastAggError as exc:
+        _record_error(data, write_state, read_state, str(exc))
+        print(exc, file=sys.stderr)
+        print(f"Журнал: {log_path}", file=sys.stderr)
+        wait_before_close(pause)
+        return 1
+
     registry = NodeRegistry()
     advertise = args.advertise or guess_advertise_host()
     open_mode = args.open
@@ -247,7 +362,23 @@ def _serve_coordinator(args: argparse.Namespace) -> int:
         _cert, _key, fingerprint = ensure_cert(data / "tls", local_names(advertise))
         if not args.insecure_http:
             ssl_kwargs = {"ssl_certfile": str(data / "tls" / "cert.pem"), "ssl_keyfile": str(data / "tls" / "key.pem")}
-    node = None if args.no_participate else _build_node(args, http_port=args.port)
+    scheme = "https" if ssl_kwargs else "http"
+    dashboard_url = f"{scheme}://127.0.0.1:{choice.port}"
+    advertise_url = f"{scheme}://{advertise}:{choice.port}"
+    note = " ".join(choice.notes)
+    write_state(
+        data,
+        {
+            "pid": os.getpid(),
+            "port": choice.port,
+            "scheme": scheme,
+            "dashboard_url": dashboard_url,
+            "advertise_url": advertise_url,
+            "error": None,
+            "note": note,
+        },
+    )
+    node = None if args.no_participate else _build_node(args, http_port=choice.port)
     bundle = data / "trusted-bundle.pem"
     if ssl_kwargs and not bundle.is_file():
         bundle.write_text((data / "tls" / "cert.pem").read_text(encoding="utf-8"), encoding="utf-8")
@@ -268,7 +399,7 @@ def _serve_coordinator(args: argparse.Namespace) -> int:
         fingerprint=fingerprint,
     )
     service.public_host = advertise
-    service.public_port = args.port
+    service.public_port = choice.port
     service.trusted_bundle = data / "trusted-bundle.pem"
     service.allow_download = bool(args.allow_download)
     service.models_dir = Path(args.models_dir) if args.models_dir else None
@@ -279,25 +410,45 @@ def _serve_coordinator(args: argparse.Namespace) -> int:
         token=token or None,
     )
     app = create_coordinator_app(service, discovery)
-    scheme = "https" if ssl_kwargs else "http"
-    banner = (
-        f"Координатор: {scheme}://{advertise}:{args.port}\n"
-        f"OpenAI API: {scheme}://127.0.0.1:{args.port}/v1\n"
-        f"Сборка llama.cpp: {args.release}."
+    lines = []
+    if note:
+        lines.append(note)
+    lines.extend(
+        [
+            f"Дашборд: {dashboard_url}",
+            f"OpenAI API: {dashboard_url}/v1",
+            f"Для узлов: {advertise_url}",
+            f"Сборка llama.cpp: {args.release}.",
+            f"Журнал: {log_path}",
+        ]
     )
     if code:
         from fast_aggregation.security.token import join_uri
 
-        banner += (
-            f"\nКод сопряжения: {code}\n"
-            f"Отпечаток: {fingerprint}\n"
-            f"Ссылка: {join_uri(advertise, args.port, code, fingerprint)}\n"
-            "Управляющий канал зашифрован TLS. Поток llama.cpp RPC между машинами остаётся открытым TCP."
+        lines.extend(
+            [
+                f"Код сопряжения: {code}",
+                f"Отпечаток: {fingerprint}",
+                f"Ссылка: {join_uri(advertise, choice.port, code, fingerprint)}",
+                "Управляющий канал зашифрован TLS. Поток llama.cpp RPC между машинами остаётся открытым TCP.",
+            ]
         )
     else:
-        banner += "\nРежим --open: без токена и без TLS."
-    _print_banner(banner)
-    uvicorn.run(app, host=args.bind, port=args.port, log_level="info", **ssl_kwargs)
+        lines.append("Режим --open: без токена и без TLS.")
+    _print_banner("\n".join(lines))
+    config = uvicorn.Config(app, host=args.bind, port=choice.port, log_level="info", **ssl_kwargs)
+    server = uvicorn.Server(config)
+    holder = getattr(args, "server_holder", None)
+    if isinstance(holder, dict):
+        holder["server"] = server
+    try:
+        server.run()
+    except SystemExit as exc:
+        message = f"Не удалось открыть порт {choice.port}. {format_owners(choice.port)} Журнал: {log_path}"
+        _record_error(data, write_state, read_state, message)
+        print(message, file=sys.stderr)
+        wait_before_close(pause)
+        return exc.code if isinstance(exc.code, int) else 1
     return 0
 
 
@@ -391,11 +542,18 @@ def _join(args: argparse.Namespace) -> int:
         print(exc, file=sys.stderr)
         return 1
     origin = pair_url.rsplit("/api/pair", 1)[0]
+    if url.startswith("fastagg://"):
+        coordinator_port = port
+    else:
+        from urllib.parse import urlparse
+
+        coordinator_port = urlparse(pair_url).port or COORDINATOR_PORT
     save_membership(
         data,
         {
             "token": result["token"],
             "coordinator": pair_url,
+            "coordinator_port": coordinator_port,
             "fingerprint": fingerprint,
             "runtime_mirror": origin + "/runtime",
         },
@@ -420,7 +578,7 @@ def _filled_namespace(**overrides: object) -> argparse.Namespace:
         "insecure_http": False,
         "allow_download": False,
         "runtime_from": "",
-        "port": COORDINATOR_PORT,
+        "port": None,
         "engine_port": ENGINE_PORT,
         "no_participate": False,
         "models_dir": "",
@@ -432,31 +590,100 @@ def _filled_namespace(**overrides: object) -> argparse.Namespace:
 
 def _tray(args: argparse.Namespace) -> int:
     import threading
-    import urllib.request
 
+    from fast_aggregation.instance import configure_log, health_ok, log_dir, read_state, tray_status_text
     from fast_aggregation.tray import run_tray
 
-    child = _filled_namespace(open=args.open, insecure_http=args.insecure_http)
-    target = _serve_node if args.role == "node" else _serve_coordinator
-    threading.Thread(target=target, args=(child,), name="fa-tray-server", daemon=True).start()
-    scheme = "http" if args.open or args.insecure_http else "https"
-    url = f"{scheme}://127.0.0.1:{COORDINATOR_PORT if args.role == 'coordinator' else NODE_HTTP_PORT}"
+    data = _data_dir(args)
+    logs = configure_log("tray" if args.role == "node" else "coordinator")
+    holder: dict = {}
+    thread_box: dict = {"thread": None}
+    child = _filled_namespace(
+        open=args.open,
+        insecure_http=args.insecure_http,
+        pause=False,
+        lock_held=False,
+        server_holder=holder,
+    )
+
+    def serve() -> None:
+        target = _serve_node if args.role == "node" else _serve_coordinator
+        try:
+            target(child)
+        except Exception as exc:
+            from fast_aggregation.instance import write_state
+
+            state = read_state(data)
+            state["error"] = str(exc)
+            write_state(data, state)
+
+    def start_server() -> None:
+        thread = threading.Thread(target=serve, name="fa-tray-server", daemon=True)
+        thread_box["thread"] = thread
+        thread.start()
+
+    def restart() -> None:
+        server = holder.get("server")
+        if server is not None:
+            server.should_exit = True
+        thread = thread_box.get("thread")
+        if thread is not None:
+            thread.join(timeout=5)
+        holder["server"] = None
+        start_server()
 
     def status() -> str:
-        try:
-            context = None
-            if url.startswith("https://"):
-                import ssl
+        if args.role != "coordinator":
+            scheme = "http" if args.open or args.insecure_http else "https"
+            url = f"{scheme}://127.0.0.1:{child.http_port}"
+            return "работает" if health_ok(url) else "запускается"
+        state = read_state(data)
+        url = str(state.get("dashboard_url") or "")
+        thread = thread_box.get("thread")
+        alive = bool(thread and thread.is_alive())
+        return tray_status_text(state, health_ok=health_ok(url), thread_alive=alive)
 
-                context = ssl._create_unverified_context()
-            with urllib.request.urlopen(url + "/health", timeout=2, context=context) as response:
-                if response.status == 200:
-                    return "работает"
-        except OSError:
-            return "запускается"
-        return "нет ответа"
+    def current_url() -> str | None:
+        if args.role != "coordinator":
+            return None
+        return str(read_state(data).get("dashboard_url") or "") or None
 
-    run_tray(url if args.role == "coordinator" else None, status)
+    def stop_server() -> None:
+        server = holder.get("server")
+        if server is not None:
+            server.should_exit = True
+
+    if args.role == "coordinator":
+        # Блокировку держит процесс трея, чтобы перезапуск не отпустил её между попытками.
+        from fast_aggregation.instance import InstanceLock
+
+        lock = InstanceLock(data / "coordinator.lock")
+        if lock.try_acquire():
+            child.lock_held = True
+            start_server()
+
+            def quit_primary() -> None:
+                stop_server()
+                lock.release()
+
+            run_tray(
+                url_getter=current_url,
+                status=status,
+                logs_dir=str(logs.parent),
+                on_restart=restart,
+                on_quit=quit_primary,
+            )
+            lock.release()
+            return 0
+    else:
+        start_server()
+    run_tray(
+        url_getter=current_url if args.role == "coordinator" else None,
+        status=status,
+        logs_dir=str(log_dir()),
+        on_restart=None,
+        on_quit=stop_server if args.role == "node" else None,
+    )
     return 0
 
 

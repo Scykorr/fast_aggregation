@@ -31,14 +31,15 @@ $Rules = @(
     @{ Name = "fastagg-discovery"; Protocol = "UDP"; Port = 45221 },
     @{ Name = "fastagg-node"; Protocol = "TCP"; Port = 47000 },
     @{ Name = "fastagg-rpc"; Protocol = "TCP"; Port = 50052 },
-    @{ Name = "fastagg-dashboard"; Protocol = "TCP"; Port = 8080 }
+    @{ Name = "fastagg-dashboard"; Protocol = "TCP"; Port = "47080-47099" }
 )
 foreach ($Rule in $Rules) {
     $existing = Get-NetFirewallRule -DisplayName $Rule.Name -ErrorAction SilentlyContinue
-    if (-not $existing) {
-        New-NetFirewallRule -DisplayName $Rule.Name -Direction Inbound -Protocol $Rule.Protocol -LocalPort $Rule.Port -Action Allow -Profile Private | Out-Null
-        Write-Host "Правило брандмауэра: $($Rule.Name)"
+    if ($existing) {
+        Remove-NetFirewallRule -DisplayName $Rule.Name
     }
+    New-NetFirewallRule -DisplayName $Rule.Name -Direction Inbound -Protocol $Rule.Protocol -LocalPort $Rule.Port -Action Allow -Profile Private | Out-Null
+    Write-Host "Правило брандмауэра: $($Rule.Name) порт $($Rule.Port)"
 }
 
 $Exe = Join-Path $Root ".venv\Scripts\fastagg.exe"
@@ -60,7 +61,7 @@ Write-Host ""
 Write-Host "Дальше:"
 if ($Role -eq "Coordinator") {
     Write-Host "  .\.venv\Scripts\fastagg.exe coordinator"
-    Write-Host "  Код сопряжения появится в консоли и на https://127.0.0.1:8080 с этого компьютера."
+    Write-Host "  Код сопряжения появится в консоли. Дашборд по умолчанию https://127.0.0.1:47080; если порт занят, адрес будет в этой же консоли."
 } else {
     Write-Host "  .\.venv\Scripts\fastagg.exe join --url <ссылка fastagg:// с координатора>"
     Write-Host "  .\.venv\Scripts\fastagg.exe node"
