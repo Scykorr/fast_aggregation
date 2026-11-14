@@ -9,7 +9,7 @@ RPC, а тот совпадает с порядком эндпоинтов `--rp
 
 from __future__ import annotations
 
-from fast_aggregation.cluster.health import compute_factor, evaluate_guard, network_factor
+from fast_aggregation.cluster.health import compute_factor, evaluate_guard, hottest_c, network_factor
 from fast_aggregation.constants import (
     DEFAULT_CPU_RAM_FRACTION,
     DEFAULT_VRAM_RESERVE_MB,
@@ -68,6 +68,10 @@ def plan_placement(
         if node.resources is None:
             warnings.append(f"У узла {node.name} ещё нет снимка ресурсов")
             continue
+        blocked = _blocked_by_limits(node)
+        if blocked:
+            warnings.append(blocked)
+            continue
         try:
             backend = choose_backend(node.resources, node.preferred_backend, node.resources.os_name)
         except BackendError as exc:
@@ -106,6 +110,8 @@ def _slots_for_node(
 ) -> tuple[list[PlannedDevice], list[str]]:
     assert node.resources is not None
     warnings: list[str] = []
+    if node.limits and node.limits.memory_reserve_mb is not None:
+        reserve_mb = node.limits.memory_reserve_mb
     guard = evaluate_guard(node.resources)
     if guard.action == "exclude":
         warnings.append(f"{node.name} исключён: {guard.reason}")
@@ -141,6 +147,7 @@ def _slots_for_node(
                 f"{node.name}: у «{gpu.name}» свободно {memory} МиБ, это меньше порога {min_memory_mb}"
             )
             continue
+        memory = _cap_memory(node, memory)
         slots.append(
             _device(
                 node,
@@ -192,6 +199,9 @@ def _cpu_slot(node: ClusterNode, *, fraction: float, min_memory_mb: int) -> Plan
         memory = max(0, memory - PHONE_RAM_RESERVE_MB // 2)
     if memory < min_memory_mb:
         return None
+    memory = _cap_memory(node, memory)
+    if memory < min_memory_mb:
+        return None
     guard = evaluate_guard(node.resources)
     return _device(
         node,
@@ -202,6 +212,32 @@ def _cpu_slot(node: ClusterNode, *, fraction: float, min_memory_mb: int) -> Plan
         memory_mb=memory,
         guard_factor=guard.factor,
     )
+
+
+def _blocked_by_limits(node: ClusterNode) -> str | None:
+    limits = node.limits
+    if limits is None or node.resources is None:
+        return None
+    if limits.excluded:
+        return f"{node.name} исключён из расчётов"
+    temp = hottest_c(node.resources)
+    if limits.max_temp_c is not None and temp is not None and temp >= limits.max_temp_c:
+        return f"{node.name}: температура {temp:.0f} °C выше лимита {limits.max_temp_c:.0f}"
+    battery = node.resources.battery_percent
+    if (
+        limits.min_battery_percent is not None
+        and node.resources.power_plugged is False
+        and battery is not None
+        and battery < limits.min_battery_percent
+    ):
+        return f"{node.name}: батарея {battery:.0f}% ниже лимита {limits.min_battery_percent:.0f}"
+    return None
+
+
+def _cap_memory(node: ClusterNode, memory: int) -> int:
+    if node.limits and node.limits.memory_cap_mb is not None:
+        return min(memory, max(0, node.limits.memory_cap_mb))
+    return memory
 
 
 def _device(

@@ -162,6 +162,32 @@ class Announce:
 
 
 @dataclass
+class NodeLimits:
+    """Ручные ограничения узла. Пустые поля не меняют общие пороги."""
+
+    excluded: bool = False
+    max_temp_c: float | None = None
+    min_battery_percent: float | None = None
+    memory_reserve_mb: int | None = None
+    memory_cap_mb: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def limits_from_dict(data: dict[str, Any] | None) -> NodeLimits | None:
+    if not data:
+        return None
+    return NodeLimits(
+        excluded=bool(data.get("excluded")),
+        max_temp_c=_optional_float(data.get("max_temp_c")),
+        min_battery_percent=_optional_float(data.get("min_battery_percent")),
+        memory_reserve_mb=_optional_int(data.get("memory_reserve_mb")),
+        memory_cap_mb=_optional_int(data.get("memory_cap_mb")),
+    )
+
+
+@dataclass
 class ClusterNode:
     """Снимок узла, с которым работает планировщик."""
 
@@ -176,6 +202,7 @@ class ClusterNode:
     source: str = "discovery"
     rtt_ms: float | None = None
     bandwidth_mbps: float | None = None
+    limits: NodeLimits | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +217,7 @@ class ClusterNode:
             "source": self.source,
             "rtt_ms": self.rtt_ms,
             "bandwidth_mbps": self.bandwidth_mbps,
+            "limits": self.limits.to_dict() if self.limits else None,
         }
 
 

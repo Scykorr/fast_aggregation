@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 
 from fast_aggregation.constants import PEER_TTL_SEC
-from fast_aggregation.models import Announce, ClusterNode, MachineResources
+from fast_aggregation.models import Announce, ClusterNode, MachineResources, NodeLimits
 
 
 @dataclass
@@ -30,6 +30,7 @@ class TrackedNode:
     manual: bool = False
     rtt_ms: float | None = None
     bandwidth_mbps: float | None = None
+    limits: NodeLimits | None = None
 
     def online(self, now: float, ttl: float) -> bool:
         return (now - self.last_seen) <= ttl
@@ -47,6 +48,7 @@ class TrackedNode:
             source="manual" if self.manual else self.source,
             rtt_ms=self.rtt_ms,
             bandwidth_mbps=self.bandwidth_mbps,
+            limits=self.limits,
         )
 
     def to_public(self, now: float, ttl: float) -> dict:
@@ -72,6 +74,7 @@ class TrackedNode:
             "last_error": self.last_error,
             "rtt_ms": self.rtt_ms,
             "bandwidth_mbps": self.bandwidth_mbps,
+            "limits": self.limits.to_dict() if self.limits else None,
         }
 
 
@@ -122,6 +125,7 @@ class NodeRegistry:
         manual: bool | None = None,
         rtt_ms: float | None = None,
         bandwidth_mbps: float | None = None,
+        limits: NodeLimits | None = None,
         seen: bool = True,
         now: float | None = None,
     ) -> TrackedNode:
@@ -165,6 +169,8 @@ class NodeRegistry:
                 current.rtt_ms = rtt_ms
             if bandwidth_mbps is not None:
                 current.bandwidth_mbps = bandwidth_mbps
+            if limits is not None:
+                current.limits = limits
             if seen:
                 current.last_seen = moment
             return current

@@ -46,6 +46,7 @@ def test_ensure_runtime_uses_downloader_once(tmp_path: Path):
         tmp_path,
         role="rpc",
         downloader=download,
+        allow_download=True,
     )
     again = ensure_runtime(
         "b12359",
@@ -55,6 +56,7 @@ def test_ensure_runtime_uses_downloader_once(tmp_path: Path):
         tmp_path,
         role="server",
         downloader=download,
+        allow_download=True,
     )
     assert folder == again
     assert len(calls) == 1

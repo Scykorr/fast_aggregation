@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 
+from fast_aggregation.cluster.catalog import recommend, summarize_capacity
 from fast_aggregation.cluster.fit import assert_fits, estimate_need
 from fast_aggregation.cluster.health import shed_reasons
 from fast_aggregation.cluster.planner import plan_placement
@@ -20,7 +21,7 @@ from fast_aggregation.constants import DEFAULT_LLAMA_RELEASE, ENGINE_PORT, NODE_
 from fast_aggregation.coordinator.client import HttpNodeClient, NodeClient
 from fast_aggregation.discovery.scan import hosts_in_cidr, scan_tcp
 from fast_aggregation.errors import FastAggError, RuntimeError_
-from fast_aggregation.models import PlacementPlan, resources_from_dict
+from fast_aggregation.models import NodeLimits, PlacementPlan, limits_from_dict, resources_from_dict
 from fast_aggregation.node.service import NodeService
 from fast_aggregation.resources.probe import normalize_arch
 from fast_aggregation.runtime.commands import llama_server_argv, preview_command
@@ -82,6 +83,8 @@ class CoordinatorService:
         self.public_host = "127.0.0.1"
         self.public_port = 8080
         self.trusted_bundle: Path | None = None
+        self.models_dir: Path | None = None
+        self.allow_download = False
 
     def start_background(self) -> None:
         self.publish_local()
@@ -331,6 +334,119 @@ class CoordinatorService:
             "pairing": self._pairing_view() if reveal_pair else None,
         }
 
+    def set_limits(self, node_id: str, raw: dict) -> dict:
+        tracked = self.registry.get(node_id)
+        if tracked is None:
+            raise FastAggError("Узел не найден")
+        limits = limits_from_dict(raw) or NodeLimits()
+        self.registry.upsert_details(node_id, limits=limits, seen=False)
+        self._save_limits()
+        updated = self.registry.get(node_id)
+        return updated.limits.to_dict() if updated and updated.limits else {}
+
+    def capacity_report(self, *, allow_cpu: bool, reserve_mb: int, ctx: int) -> dict:
+        try:
+            plan = self.preview_plan(allow_cpu=allow_cpu, reserve_mb=reserve_mb)
+            plan_dict = plan.to_dict()
+            error = None
+        except FastAggError as exc:
+            plan = None
+            plan_dict = None
+            error = str(exc)
+        capacity = summarize_capacity(plan, self.registry.cluster_nodes())
+        return {
+            "raw_vram_mib": capacity.raw_vram_mib,
+            "raw_ram_mib": capacity.raw_ram_mib,
+            "usable_mib": capacity.usable_mib,
+            "node_count": capacity.node_count,
+            "slowest_mbps": capacity.slowest_mbps,
+            "compute_class": capacity.compute_class,
+            "notes": list(capacity.notes),
+            "plan": plan_dict,
+            "plan_error": error,
+            "recommendations": recommend(capacity, ctx=ctx),
+        }
+
+    def list_local_models(self, ctx: int, allow_cpu: bool, reserve_mb: int) -> list[dict]:
+        folder = self.models_dir
+        if folder is None or not folder.is_dir():
+            return []
+        rows = []
+        for path in sorted(folder.glob("*.gguf")):
+            rows.append(self.describe_model(str(path), ctx=ctx, allow_cpu=allow_cpu, reserve_mb=reserve_mb))
+        return rows
+
+    def describe_model(self, path: str, *, ctx: int, allow_cpu: bool, reserve_mb: int) -> dict:
+        file = Path(path)
+        need = estimate_need(str(file), ctx_size=ctx, parallel=1) if file.is_file() else None
+        try:
+            plan = self.preview_plan(
+                allow_cpu=allow_cpu,
+                reserve_mb=reserve_mb,
+                need_mb=need.total_mb if need else None,
+            )
+            note = assert_fits(plan, need)
+            fits = True
+            error = None
+            placement = plan.to_dict()
+        except FastAggError as exc:
+            fits = False
+            error = str(exc)
+            note = None
+            placement = None
+        return {
+            "path": str(file),
+            "name": file.name,
+            "size_mib": round(file.stat().st_size / (1024 * 1024), 1) if file.is_file() else None,
+            "need_mib": round(need.total_mb, 1) if need else None,
+            "weight_mib": round(need.weight_mb, 1) if need else None,
+            "kv_mib": round(need.kv_mb, 1) if need else None,
+            "note": note,
+            "fits": fits,
+            "error": error,
+            "plan": placement,
+        }
+
+    def engine_snapshot(self) -> dict:
+        layers = self.plan.to_dict()["devices"] if self.plan else []
+        if self.phase != "running":
+            return {"running": False, "slots": [], "layers": layers}
+        try:
+            response = httpx.get(f"http://127.0.0.1:{self.engine_port}/slots", timeout=1.5)
+            slots = response.json() if response.status_code == 200 else []
+        except (httpx.HTTPError, ValueError):
+            slots = []
+        return {"running": True, "slots": slots if isinstance(slots, list) else [], "layers": layers}
+
+    def _save_limits(self) -> None:
+        import json
+
+        payload = {}
+        for node in self.registry.public_nodes():
+            if node.get("limits"):
+                payload[node["node_id"]] = node["limits"]
+        path = self.data_dir / "node-limits.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_limits(self) -> None:
+        import json
+
+        path = self.data_dir / "node-limits.json"
+        if not path.is_file():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(payload, dict):
+            return
+        for node_id, raw in payload.items():
+            if isinstance(raw, dict) and self.registry.get(str(node_id)):
+                limits = limits_from_dict(raw)
+                if limits:
+                    self.registry.upsert_details(str(node_id), limits=limits, seen=False)
+
     def _pairing_view(self) -> dict[str, str] | None:
         if not self.pairing_code:
             return None
@@ -377,6 +493,7 @@ class CoordinatorService:
                 backend,
                 self.data_dir / "runtimes",
                 role="server",
+                allow_download=self.allow_download,
             )
         return executable(folder, system, "server")
 

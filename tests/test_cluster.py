@@ -232,7 +232,7 @@ def test_participating_coordinator_uses_local_rpc_and_loopback(tmp_path: Path):
 def test_cuda_build_is_passed_to_downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, str | None] = {}
 
-    def fake_ensure(tag, system, arch, backend, cache, role="rpc", cuda_build=None, downloader=None):
+    def fake_ensure(tag, system, arch, backend, cache, role="rpc", cuda_build=None, downloader=None, **_extra):
         del tag, system, arch, backend, cache, role, downloader
         captured["cuda_build"] = cuda_build
         folder = tmp_path / "rt"

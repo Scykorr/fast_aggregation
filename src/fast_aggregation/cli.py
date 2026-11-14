@@ -7,6 +7,7 @@ import logging
 import platform
 import subprocess
 import sys
+from pathlib import Path
 
 import uvicorn
 
@@ -37,7 +38,7 @@ from fast_aggregation.security.token import (
     new_token,
     save_membership,
 )
-from fast_aggregation.runtime.downloads import ensure_runtime, executable
+from fast_aggregation.runtime.downloads import ensure_runtime, executable, stage_archive
 from fast_aggregation.runtime.releases import engine_backend
 
 
@@ -56,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     node.add_argument("--http-port", type=int, default=NODE_HTTP_PORT)
     node.add_argument("--open", action="store_true", help="Без токена. Только своя лаборатория")
     node.add_argument("--insecure-http", action="store_true", help="HTTP без TLS")
+    node.add_argument("--allow-download", action="store_true", help="Разрешить скачивание llama.cpp из интернета")
+    node.add_argument("--runtime-from", default="", help="Базовый URL раздачи сборок координатора, обычно https://host:8080/runtime")
 
     coord = sub.add_parser("coordinator", help="Координатор, дашборд и OpenAI-совместимый API")
     _common(coord)
@@ -64,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
     coord.add_argument("--no-participate", action="store_true", help="Не отдавать ресурсы этой машины в план")
     coord.add_argument("--open", action="store_true", help="Без токена и без TLS. Только своя лаборатория")
     coord.add_argument("--insecure-http", action="store_true")
+    coord.add_argument("--allow-download", action="store_true", help="Разрешить скачивание llama.cpp из интернета")
+    coord.add_argument("--models-dir", default="", help="Локальная папка с GGUF. Интернет для моделей не нужен")
 
     join = sub.add_parser("join", help="Сопрячь этот компьютер с координатором")
     join.add_argument("--url", required=True, help="fastagg://... или https://host:port")
@@ -74,6 +79,11 @@ def main(argv: list[str] | None = None) -> int:
     join.add_argument("--http-port", type=int, default=NODE_HTTP_PORT)
     join.add_argument("--rpc-port", type=int, default=RPC_PORT)
     join.add_argument("--name", default="")
+
+    imported = sub.add_parser("runtime-import", help="Положить локальный архив llama.cpp в кэш, без интернета")
+    imported.add_argument("path")
+    imported.add_argument("--tag", default=DEFAULT_LLAMA_RELEASE)
+    imported.add_argument("--data-dir", default="")
 
     scan_net = sub.add_parser("scan-net", help="Обойти подсеть по TCP в поисках узлов")
     scan_net.add_argument("cidr")
@@ -102,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         return _join(args)
     if args.command == "scan-net":
         return _scan_net(args)
+    if args.command == "runtime-import":
+        return _runtime_import(args)
     parser.error("Неизвестная команда")
     return 2
 
@@ -167,6 +179,11 @@ def _serve_node(args: argparse.Namespace) -> int:
         )
         return 2
     service = _build_node(args, http_port=args.http_port)
+    service.settings.allow_download = bool(args.allow_download)
+    mirror = args.runtime_from.strip()
+    if not mirror and membership:
+        mirror = str(membership.get("runtime_mirror") or "")
+    service.settings.runtime_mirror = mirror or None
     discovery = DiscoveryService(
         service.announce(),
         port=args.discovery_port,
@@ -224,6 +241,8 @@ def _serve_coordinator(args: argparse.Namespace) -> int:
     service.public_host = advertise
     service.public_port = args.port
     service.trusted_bundle = data / "trusted-bundle.pem"
+    service.allow_download = bool(args.allow_download)
+    service.models_dir = Path(args.models_dir) if args.models_dir else None
     discovery = DiscoveryService(
         node.announce() if node is not None else None,
         port=args.discovery_port,
@@ -342,15 +361,40 @@ def _join(args: argparse.Namespace) -> int:
     except FastAggError as exc:
         print(exc, file=sys.stderr)
         return 1
+    origin = pair_url.rsplit("/api/pair", 1)[0]
     save_membership(
         data,
         {
             "token": result["token"],
             "coordinator": pair_url,
             "fingerprint": fingerprint,
+            "runtime_mirror": origin + "/runtime",
         },
     )
     print("Сопряжение сохранено. Запустите: fastagg node")
+    return 0
+
+
+def _runtime_import(args: argparse.Namespace) -> int:
+    source = Path(args.path)
+    cache = _data_dir(args) / "runtimes"
+    files = [source] if source.is_file() else sorted(source.glob("*"))
+    copied = 0
+    for item in files:
+        if not item.is_file():
+            continue
+        if item.suffix.lower() not in {".zip", ".gz"} and not item.name.endswith(".tar.gz"):
+            continue
+        try:
+            dest = stage_archive(cache, args.tag, item)
+        except FastAggError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(dest)
+        copied += 1
+    if copied == 0:
+        print("Не найдено архивов .zip или .tar.gz", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -397,8 +441,6 @@ def _build_node(args: argparse.Namespace, *, http_port: int) -> NodeService:
 
 
 def _data_dir(args: argparse.Namespace):
-    from pathlib import Path
-
     if getattr(args, "data_dir", ""):
         return Path(args.data_dir)
     return home_dir()

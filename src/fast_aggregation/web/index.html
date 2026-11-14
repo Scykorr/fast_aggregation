@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>fastagg — кластер LLM</title>
+  <title>fastagg</title>
   <style>
     :root {
       color-scheme: dark;
@@ -18,318 +18,408 @@
       --accent: #c6f27a;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    header, main { padding: 20px 24px; }
-    header {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: flex-end;
-      border-bottom: 1px solid var(--line);
-    }
-    h1 { margin: 0; font-size: 22px; font-weight: 650; }
+    body { margin: 0; font: 15px/1.45 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0; font-size: 22px; }
     h2 { margin: 0 0 12px; font-size: 16px; }
-    .muted { color: var(--muted); }
-    .phase { font-weight: 650; }
-    .phase.running { color: var(--ok); }
-    .phase.error { color: var(--bad); }
-    .phase.starting, .phase.stopping { color: var(--warn); }
-    main { display: grid; gap: 16px; }
-    section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 16px;
-    }
+    nav { display: flex; gap: 8px; padding: 12px 20px 0; }
+    nav button { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    nav button.active { background: var(--accent); color: #17200f; border-color: var(--accent); }
+    main { padding: 16px 20px 32px; }
+    .panel { display: none; }
+    .panel.on { display: grid; gap: 16px; }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+    .card b { display: block; font-size: 20px; }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 8px 6px; vertical-align: top; border-bottom: 1px solid var(--line); }
-    th { color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: .03em; }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
-    .dot.on { background: var(--ok); }
+    th { color: var(--muted); font-size: 12px; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .phase { font-weight: 700; }
+    .phase.running { color: var(--ok); }
+    .phase.error { color: var(--bad); }
     form, .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
     label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-    input[type="text"], input[type="number"] {
-      background: #0e130d;
-      color: var(--text);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px 10px;
-      min-width: 180px;
-    }
-    button {
-      background: var(--accent);
-      color: #17200f;
-      border: 0;
-      border-radius: 8px;
-      padding: 9px 14px;
-      font-weight: 700;
-      cursor: pointer;
-    }
+    input, select, textarea { background: #0e130d; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    textarea { width: 100%; min-height: 72px; resize: vertical; }
+    button { background: var(--accent); color: #17200f; border: 0; border-radius: 8px; padding: 8px 12px; font-weight: 700; cursor: pointer; }
     button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
     button:disabled { opacity: .55; cursor: wait; }
-    pre {
-      white-space: pre-wrap;
-      word-break: break-word;
-      background: #0e130d;
-      border-radius: 8px;
-      padding: 10px;
-      margin: 8px 0 0;
-      max-height: 240px;
-      overflow: auto;
-    }
-    .warn { color: var(--warn); }
-    .error { color: var(--bad); }
-    .chips { display: flex; gap: 6px; flex-wrap: wrap; }
-    .chip { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
-    .chip.on { border-color: var(--ok); color: var(--ok); }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+    .dot.on { background: var(--ok); }
+    .chat-layout { display: grid; grid-template-columns: 220px 1fr; gap: 12px; min-height: 420px; }
+    .chats button { display: block; width: 100%; text-align: left; margin-bottom: 6px; }
+    .messages { display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow: auto; }
+    .bubble { border-radius: 10px; padding: 8px 10px; white-space: pre-wrap; }
+    .bubble.user { background: #243024; }
+    .bubble.assistant { background: #121812; border: 1px solid var(--line); }
+    pre { white-space: pre-wrap; background: #0e130d; border-radius: 8px; padding: 10px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+    @media (max-width: 800px) { .chat-layout { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
     <div>
       <h1>fastagg</h1>
-      <div class="muted">Распределённый инференс в локальной сети, движок llama.cpp RPC</div>
+      <div class="muted">Локальный кластер. Интерфейс не ходит в интернет.</div>
     </div>
-    <div>
-      <div>Состояние: <span id="phase" class="phase">…</span></div>
-      <div id="pair" class="muted"></div>
-    </div>
+    <div>Состояние: <span id="phase" class="phase">…</span><div id="pair" class="muted"></div></div>
   </header>
+  <nav>
+    <button type="button" data-tab="overview" class="active">Обзор</button>
+    <button type="button" data-tab="nodes">Узлы</button>
+    <button type="button" data-tab="models">Модели</button>
+    <button type="button" data-tab="chat">Чат</button>
+  </nav>
   <main>
-    <section>
-      <h2>Узлы</h2>
-      <div id="nodes">Загрузка…</div>
-      <form id="manual" style="margin-top: 12px">
-        <label>Добавить узел вручную
-          <input id="address" type="text" placeholder="192.168.1.20:47000" />
-        </label>
-        <button type="submit">Добавить</button>
-      </form>
-      <div id="manual-error" class="error"></div>
-    </section>
-    <section>
-      <h2>Запуск модели</h2>
-      <p class="muted">Файл GGUF должен лежать на этой машине. Воркеры получают веса по RPC. Укажите путь или репозиторий Hugging Face.</p>
-      <form id="launch">
-        <label>Путь к GGUF
-          <input id="model" type="text" placeholder="D:\models\model.gguf" />
-        </label>
-        <label>Hugging Face
-          <input id="hf" type="text" placeholder="ggml-org/gemma-3-1b-it-GGUF:Q4_K_M" />
-        </label>
-        <label>Контекст
-          <input id="ctx" type="number" min="0" step="256" placeholder="из модели" />
-        </label>
-        <label>Потоки
-          <input id="parallel" type="number" min="1" value="1" />
-        </label>
-        <label>Запас VRAM, МиБ
-          <input id="reserve" type="number" min="0" value="512" />
-        </label>
-        <label>CPU-узлы
-          <input id="allow-cpu" type="checkbox" />
-          <span>Нужно, если в плане нет GPU</span>
-        </label>
-        <button id="preview" class="ghost" type="button">Показать план</button>
-        <button id="start" type="submit">Запустить</button>
-        <button id="stop" class="ghost" type="button">Остановить</button>
-      </form>
-      <div id="form-error" class="error"></div>
-      <div id="plan"></div>
-    </section>
-    <section>
-      <h2>Журнал llama-server</h2>
-      <pre id="log">Процесс ещё не запускался.</pre>
-    </section>
+    <div id="overview" class="panel on">
+      <section>
+        <h2>Ёмкость кластера</h2>
+        <div id="cards" class="cards"></div>
+        <div id="notes" class="muted"></div>
+      </section>
+      <section>
+        <h2>Где лежат слои</h2>
+        <div id="layers">Модель не запущена.</div>
+        <div id="speed" class="muted"></div>
+      </section>
+      <section>
+        <h2>Журнал llama-server</h2>
+        <pre id="log">Процесс ещё не запускался.</pre>
+      </section>
+    </div>
+    <div id="nodes" class="panel">
+      <section>
+        <h2>Узлы</h2>
+        <div id="node-table">Загрузка…</div>
+        <form id="manual">
+          <label>Подключить по адресу<input id="address" type="text" placeholder="192.168.1.20:47000" /></label>
+          <button type="submit">Подключить</button>
+        </form>
+        <form id="scan-form">
+          <label>Скан подсети<input id="cidr" type="text" placeholder="192.168.1.0/24" /></label>
+          <button type="submit" class="ghost">Сканировать</button>
+        </form>
+        <div id="node-msg" class="bad"></div>
+      </section>
+    </div>
+    <div id="models" class="panel">
+      <section>
+        <h2>Что поместится</h2>
+        <form id="ctx-form">
+          <label>Контекст для оценки<input id="ctx" type="number" min="256" step="256" value="4096" /></label>
+          <label>CPU-узлы<input id="allow-cpu" type="checkbox" /></label>
+          <button type="submit" class="ghost">Пересчитать</button>
+        </form>
+        <div id="recs"></div>
+      </section>
+      <section>
+        <h2>Локальные GGUF</h2>
+        <p class="muted">Папка задаётся при запуске координатора флагом --models-dir. Файлы не скачиваются.</p>
+        <div id="files">Папка не задана.</div>
+      </section>
+    </div>
+    <div id="chat" class="panel">
+      <section>
+        <div class="chat-layout">
+          <div>
+            <button type="button" id="new-chat">Новый диалог</button>
+            <div id="chat-list" class="chats"></div>
+          </div>
+          <div>
+            <div id="messages" class="messages"></div>
+            <form id="composer">
+              <textarea id="prompt" placeholder="Сообщение"></textarea>
+              <button type="submit" id="send">Отправить</button>
+            </form>
+            <div id="chat-msg" class="muted"></div>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
   <script>
-    const phaseEl = document.querySelector("#phase");
-    const nodesEl = document.querySelector("#nodes");
-    const planEl = document.querySelector("#plan");
-    const logEl = document.querySelector("#log");
-    const formError = document.querySelector("#form-error");
-    let busy = false;
+    const $ = (id) => document.querySelector(id);
+    let state = {nodes: [], phase: "idle", plan: null, engine: null};
+    let capacity = null;
+    let engine = {layers: [], slots: []};
+    let models = [];
+    const storeKey = "fastagg-chats";
+    let chats = loadChats();
+    let current = chats[0] ? chats[0].id : null;
 
-    function esc(value) {
-      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
-        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-      }[ch]));
+    function loadChats() {
+      try { return JSON.parse(localStorage.getItem(storeKey) || "[]"); }
+      catch (error) { return []; }
     }
-
+    function saveChats() { localStorage.setItem(storeKey, JSON.stringify(chats)); }
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+    }
     function mb(value) {
       if (value == null) return "н/д";
       if (value >= 1024) return (value / 1024).toFixed(1) + " ГиБ";
-      return value + " МиБ";
+      return Math.round(value) + " МиБ";
     }
 
-    function backends(list) {
-      if (!list || !list.length) return "—";
-      return `<div class="chips">${list.map((item) =>
-        `<span class="chip ${item.available ? "on" : ""}">${esc(item.name)}</span>`
-      ).join("")}</div>`;
-    }
+    document.querySelectorAll("nav button").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((item) => item.classList.remove("on"));
+        button.classList.add("active");
+        $("#" + button.dataset.tab).classList.add("on");
+      });
+    });
 
-    function gpus(list) {
-      if (!list || !list.length) return "нет";
-      return list.map((gpu) =>
-        `${esc(gpu.name)} (${esc(gpu.vendor)}, ${mb(gpu.vram_free_mb)} своб. / ${mb(gpu.vram_total_mb)})`
-      ).join("<br>");
-    }
-
-    function linkInfo(node) {
-      if (node.bandwidth_mbps == null && node.rtt_ms == null) return "";
-      const bw = node.bandwidth_mbps == null ? "н/д" : node.bandwidth_mbps + " Мбит/с";
-      const rtt = node.rtt_ms == null ? "н/д" : node.rtt_ms + " мс";
-      return `<div class="muted">канал ${esc(bw)}, RTT ${esc(rtt)}</div>`;
-    }
-
-    function healthInfo(res) {
-      if (!res) return "";
-      const parts = [];
-      if (res.temperature_c != null) parts.push(Math.round(res.temperature_c) + " °C");
-      if (res.battery_percent != null) parts.push("батарея " + Math.round(res.battery_percent) + "%");
-      if (res.device_class && res.device_class !== "unknown") parts.push(res.device_class);
-      return parts.length ? `<div class="muted">${esc(parts.join(", "))}</div>` : "";
-    }
-
-    function renderNodes(nodes) {
-      if (!nodes.length) {
-        nodesEl.innerHTML = "<p class='muted'>Пока никого. Запустите fastagg node на других компьютерах этой сети или добавьте адрес вручную.</p>";
-        return;
+    function render() {
+      const phase = $("#phase");
+      phase.textContent = state.phase + (state.error ? " — " + state.error : "");
+      phase.className = "phase " + (state.phase || "");
+      const pair = $("#pair");
+      pair.textContent = state.pairing && state.pairing.code
+        ? "Код сопряжения: " + state.pairing.code
+        : "";
+      if (capacity) {
+        $("#cards").innerHTML = [
+          ["Сырая VRAM", mb(capacity.raw_vram_mib)],
+          ["Сырая ОЗУ", mb(capacity.raw_ram_mib)],
+          ["Пригодно", mb(capacity.usable_mib)],
+          ["Узлов в плане", capacity.node_count],
+          ["Медленный канал", capacity.slowest_mbps == null ? "н/д" : capacity.slowest_mbps + " Мбит/с"]
+        ].map((item) => `<div class="card"><span class="muted">${esc(item[0])}</span><b>${esc(item[1])}</b></div>`).join("");
+        $("#notes").textContent = (capacity.notes || []).join(" ");
+        const rows = (capacity.recommendations || []).map((row) => `<tr>
+          <td>${esc(row.label)}</td>
+          <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
+          <td>${mb(row.need_mib)}</td>
+          <td>${row.fits ? row.tokens_per_second + " ток/с" : "—"}</td>
+          <td>${row.max_context || "—"}</td>
+        </tr>`).join("");
+        $("#recs").innerHTML = `<table><thead><tr><th>Модель</th><th></th><th>Нужно</th><th>Оценка скорости</th><th>Макс. контекст</th></tr></thead><tbody>${rows}</tbody></table>`;
       }
-      const rows = nodes.map((node) => {
+      const layers = (engine.layers && engine.layers.length) ? engine.layers : ((state.plan && state.plan.devices) || []);
+      $("#layers").innerHTML = layers.length ? "<ul>" + layers.map((device) =>
+        `<li>${esc(device.node_name)} · ${esc(device.name)} · ${device.memory_mb} МиБ · ${(device.share * 100).toFixed(1)}%</li>`
+      ).join("") + "</ul>" : "Модель не запущена.";
+      const slot = (engine.slots || [])[0] || {};
+      const tps = slot.timings && (slot.timings.predicted_per_second || slot.timings.predicted_n);
+      $("#speed").textContent = tps ? "Слоты llama-server отвечают, смотрите скорость в чате после ответа." : "Скорость появится в ответе чата.";
+      const log = state.engine && state.engine.log_tail;
+      $("#log").textContent = log && log.length ? log.join("\n") : "Процесс ещё не запускался.";
+      renderNodes();
+      renderFiles();
+      renderChats();
+    }
+
+    function renderNodes() {
+      const rows = (state.nodes || []).map((node) => {
         const res = node.resources || {};
+        const limits = node.limits || {};
+        const gpus = (res.gpus || []).map((gpu) => `${esc(gpu.name)} ${mb(gpu.vram_free_mb)}/${mb(gpu.vram_total_mb)} ${gpu.temperature_c != null ? Math.round(gpu.temperature_c) + "°C" : ""}`).join("<br>") || "нет";
         return `<tr>
-          <td><span class="dot ${node.online ? "on" : ""}"></span>${esc(node.name)}<div class="muted">${esc(node.node_id).slice(0, 8)}</div></td>
-          <td>${esc(node.host)}:${node.http_port}<div class="muted">RPC ${node.rpc_port} · ${esc(node.source)}</div></td>
-          <td>${esc(res.os_name || node.os_name)} ${esc(res.arch || node.arch || "")}<div class="muted">${esc(res.os_version || "")}</div></td>
-          <td>${esc(res.cpu_model || "—")}<div class="muted">${res.cpu_logical || "?"} логич. / ${res.cpu_physical ?? "?"} физ.</div></td>
-          <td>${mb(res.ram_available_mb)} своб.<div class="muted">из ${mb(res.ram_total_mb)}</div></td>
-          <td>${gpus(res.gpus)}</td>
-          <td>${backends(res.backends)}<div class="muted">предпочтение: ${esc(node.preferred_backend)}</div></td>
-          <td>${node.rpc && node.rpc.running ? "RPC слушает" : "RPC выключен"}${node.rpc && node.rpc.backend ? " · " + esc(node.rpc.backend) : ""}${linkInfo(node)}${healthInfo(res)}${node.last_error ? `<div class="error">${esc(node.last_error)}</div>` : ""}</td>
-          <td>${node.age_sec} с</td>
-          <td>${node.source === "manual" ? `<button class="ghost" data-remove="${esc(node.node_id)}">Убрать</button>` : ""}</td>
+          <td><span class="dot ${node.online ? "on" : ""}"></span>${esc(node.name)}<div class="muted">${esc(node.host)}:${node.http_port}</div></td>
+          <td>${esc(res.cpu_model || "—")}<div class="muted">${res.cpu_percent != null ? Math.round(res.cpu_percent) + "% · " : ""}${mb(res.ram_available_mb)} своб.</div></td>
+          <td>${gpus}</td>
+          <td>${res.temperature_c != null ? Math.round(res.temperature_c) + " °C" : "н/д"}<div class="muted">${res.battery_percent != null ? "батарея " + Math.round(res.battery_percent) + "%" : esc(res.device_class || "")}</div></td>
+          <td>${node.bandwidth_mbps != null ? node.bandwidth_mbps + " Мбит/с" : "н/д"}<div class="muted">${node.rtt_ms != null ? node.rtt_ms + " мс" : ""}</div></td>
+          <td>${limits.excluded ? "исключён" : "в расчёте"}</td>
+          <td>
+            <button class="ghost" data-exclude="${esc(node.node_id)}" data-value="${limits.excluded ? "0" : "1"}">${limits.excluded ? "Вернуть" : "Исключить"}</button>
+            <form data-limits="${esc(node.node_id)}">
+              <input name="max_temp_c" type="number" placeholder="макс °C" value="${limits.max_temp_c ?? ""}" />
+              <input name="min_battery_percent" type="number" placeholder="мин %" value="${limits.min_battery_percent ?? ""}" />
+              <input name="memory_reserve_mb" type="number" placeholder="запас МиБ" value="${limits.memory_reserve_mb ?? ""}" />
+              <input name="memory_cap_mb" type="number" placeholder="потолок МиБ" value="${limits.memory_cap_mb ?? ""}" />
+              <button type="submit" class="ghost">Лимиты</button>
+            </form>
+            ${node.source === "manual" ? `<button class="ghost" data-remove="${esc(node.node_id)}">Отключить</button>` : ""}
+          </td>
         </tr>`;
       }).join("");
-      nodesEl.innerHTML = `<table><thead><tr>
-        <th>Узел</th><th>Адрес</th><th>ОС</th><th>CPU</th><th>ОЗУ</th><th>GPU</th><th>Бэкенды</th><th>RPC</th><th>Давно</th><th></th>
-      </tr></thead><tbody>${rows}</tbody></table>`;
+      $("#node-table").innerHTML = rows ? `<table><thead><tr><th>Узел</th><th>CPU / ОЗУ</th><th>GPU</th><th>Состояние</th><th>Сеть</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>` : "<p class='muted'>Узлов нет.</p>";
     }
 
-    function renderPlan(plan, command) {
-      if (!plan) {
-        planEl.innerHTML = "";
+    function renderFiles() {
+      if (!models.length) {
+        $("#files").textContent = "В папке моделей нет GGUF или папка не задана.";
         return;
       }
-      const devices = (plan.devices || []).map((device) =>
-        `<li>${esc(device.node_name)} · ${esc(device.name)} · ${device.memory_mb} МиБ · ${(device.share * 100).toFixed(1)}% · ${esc(device.backend)}</li>`
-      ).join("");
-      const warnings = (plan.warnings || []).map((item) => `<div class="warn">${esc(item)}</div>`).join("");
-      planEl.innerHTML = `<h2>План слоёв</h2><ul>${devices}</ul>${warnings}
-        <div class="muted">RPC: ${esc((plan.rpc_endpoints || []).join(", "))}</div>
-        <div class="muted">tensor-split: ${esc((plan.tensor_split || []).join(","))}</div>
-        ${command ? `<pre>${esc(command)}</pre>` : ""}`;
+      $("#files").innerHTML = "<table><thead><tr><th>Файл</th><th>Размер</th><th>Нужно</th><th></th><th></th></tr></thead><tbody>" +
+        models.map((item) => `<tr>
+          <td>${esc(item.name)}</td>
+          <td>${mb(item.size_mib)}</td>
+          <td>${mb(item.need_mib)}</td>
+          <td class="${item.fits ? "ok" : "bad"}">${item.fits ? "влезет" : esc(item.error || "не влезет")}</td>
+          <td><button class="ghost" data-start="${esc(item.path)}">Запустить</button></td>
+        </tr>`).join("") + "</tbody></table>";
     }
 
-    function payload() {
-      return {
-        model_path: document.querySelector("#model").value,
-        hf_repo: document.querySelector("#hf").value,
-        ctx_size: Number(document.querySelector("#ctx").value) || null,
-        parallel: Number(document.querySelector("#parallel").value) || 1,
-        reserve_mb: Number(document.querySelector("#reserve").value) || 0,
-        allow_cpu: document.querySelector("#allow-cpu").checked,
-      };
+    function renderChats() {
+      if (!current) {
+        const created = {id: String(Date.now()), title: "Диалог", messages: []};
+        chats = [created];
+        current = created.id;
+        saveChats();
+      }
+      $("#chat-list").innerHTML = chats.map((chat) =>
+        `<button type="button" class="ghost" data-chat="${esc(chat.id)}">${esc(chat.title)}</button>`
+      ).join("");
+      const chat = chats.find((item) => item.id === current);
+      $("#messages").innerHTML = (chat ? chat.messages : []).map((message) =>
+        `<div class="bubble ${message.role}">${esc(message.content)}</div>`
+      ).join("");
     }
 
     async function refresh() {
-      if (busy) return;
       const response = await fetch("/api/state");
-      const data = await response.json();
-      phaseEl.textContent = data.phase + (data.error ? " — " + data.error : "");
-      phaseEl.className = "phase " + data.phase;
-      const pair = document.querySelector("#pair");
-      if (data.pairing && data.pairing.code) {
-        pair.textContent = "Код сопряжения: " + data.pairing.code + (data.pairing.fingerprint ? " · отпечаток " + data.pairing.fingerprint : "");
-      } else {
-        pair.textContent = "";
-      }
-      renderNodes(data.nodes || []);
-      if (data.plan) renderPlan(data.plan, null);
-      const lines = data.engine && data.engine.log_tail;
-      logEl.textContent = lines && lines.length ? lines.join("\n") : "Процесс ещё не запускался.";
+      state = await response.json();
+      const ctx = Number($("#ctx").value) || 4096;
+      const allow = $("#allow-cpu").checked;
+      const cap = await fetch(`/api/capacity?ctx=${ctx}&allow_cpu=${allow}`);
+      capacity = await cap.json();
+      const eng = await fetch("/api/engine");
+      engine = await eng.json();
+      const files = await fetch(`/api/models?ctx=${ctx}&allow_cpu=${allow}`);
+      const body = await files.json();
+      models = body.models || [];
+      render();
     }
 
-    document.querySelector("#manual").addEventListener("submit", async (event) => {
+    $("#manual").addEventListener("submit", async (event) => {
       event.preventDefault();
-      document.querySelector("#manual-error").textContent = "";
-      const response = await fetch("/api/nodes", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({address: document.querySelector("#address").value}),
-      });
+      const response = await fetch("/api/nodes", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({address: $("#address").value})});
       const data = await response.json();
-      if (!response.ok) {
-        document.querySelector("#manual-error").textContent = data.detail || "Не удалось добавить узел";
-        return;
-      }
-      document.querySelector("#address").value = "";
+      $("#node-msg").textContent = response.ok ? "" : (data.detail || "Не подключено");
       refresh();
     });
-
-    nodesEl.addEventListener("click", async (event) => {
-      const id = event.target && event.target.dataset && event.target.dataset.remove;
-      if (!id) return;
-      await fetch("/api/nodes/" + encodeURIComponent(id), {method: "DELETE"});
+    $("#scan-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch("/api/scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cidr: $("#cidr").value})});
+      const data = await response.json();
+      $("#node-msg").textContent = response.ok ? "Найдено: " + (data.found || []).join(", ") : (data.detail || "Скан не удался");
       refresh();
     });
-
-    document.querySelector("#preview").addEventListener("click", async () => {
-      formError.textContent = "";
-      const response = await fetch("/api/plan", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload()),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        formError.textContent = data.detail || "План не построен";
-        return;
+    $("#node-table").addEventListener("click", async (event) => {
+      const remove = event.target.dataset && event.target.dataset.remove;
+      const exclude = event.target.dataset && event.target.dataset.exclude;
+      if (remove) {
+        await fetch("/api/nodes/" + encodeURIComponent(remove), {method: "DELETE"});
+        refresh();
       }
-      renderPlan(data.plan, data.command);
-    });
-
-    document.querySelector("#launch").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      formError.textContent = "";
-      busy = true;
-      document.querySelector("#start").disabled = true;
-      phaseEl.textContent = "starting";
-      try {
-        const response = await fetch("/api/cluster/start", {
+      if (exclude) {
+        await fetch("/api/nodes/" + encodeURIComponent(exclude) + "/limits", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(payload()),
+          body: JSON.stringify({excluded: event.target.dataset.value === "1"})
         });
-        const data = await response.json();
-        if (!response.ok) formError.textContent = data.detail || "Запуск не удался";
-        else if (data.plan) renderPlan(data.plan, null);
-      } finally {
-        busy = false;
-        document.querySelector("#start").disabled = false;
         refresh();
       }
     });
-
-    document.querySelector("#stop").addEventListener("click", async () => {
-      await fetch("/api/cluster/stop", {method: "POST"});
+    $("#node-table").addEventListener("submit", async (event) => {
+      const form = event.target;
+      if (!form.dataset || !form.dataset.limits) return;
+      event.preventDefault();
+      const payload = {excluded: false};
+      ["max_temp_c", "min_battery_percent", "memory_reserve_mb", "memory_cap_mb"].forEach((name) => {
+        const value = form.elements[name].value;
+        payload[name] = value === "" ? null : Number(value);
+      });
+      await fetch("/api/nodes/" + encodeURIComponent(form.dataset.limits) + "/limits", {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+      });
       refresh();
+    });
+    $("#ctx-form").addEventListener("submit", (event) => { event.preventDefault(); refresh(); });
+    $("#files").addEventListener("click", async (event) => {
+      const path = event.target.dataset && event.target.dataset.start;
+      if (!path) return;
+      event.target.disabled = true;
+      const response = await fetch("/api/cluster/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({model_path: path, ctx_size: Number($("#ctx").value) || 4096, allow_cpu: $("#allow-cpu").checked, parallel: 1, reserve_mb: 512})
+      });
+      const data = await response.json();
+      if (!response.ok) $("#node-msg").textContent = data.detail || "Запуск не удался";
+      event.target.disabled = false;
+      refresh();
+    });
+
+    $("#new-chat").addEventListener("click", () => {
+      const created = {id: String(Date.now()), title: "Диалог", messages: []};
+      chats.unshift(created);
+      current = created.id;
+      saveChats();
+      renderChats();
+    });
+    $("#chat-list").addEventListener("click", (event) => {
+      const id = event.target.dataset && event.target.dataset.chat;
+      if (!id) return;
+      current = id;
+      renderChats();
+    });
+    $("#composer").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = $("#prompt").value.trim();
+      if (!text) return;
+      const chat = chats.find((item) => item.id === current);
+      chat.messages.push({role: "user", content: text});
+      chat.messages.push({role: "assistant", content: ""});
+      if (chat.title === "Диалог") chat.title = text.slice(0, 32);
+      $("#prompt").value = "";
+      saveChats();
+      renderChats();
+      const send = $("#send");
+      send.disabled = true;
+      $("#chat-msg").textContent = "";
+      try {
+        const response = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({model: "local", messages: chat.messages.slice(0, -1), stream: true})
+        });
+        if (!response.ok || !response.body) {
+          const data = await response.json().catch(() => ({}));
+          chat.messages.pop();
+          $("#chat-msg").textContent = data.detail || data.error && data.error.message || "Модель не отвечает";
+          saveChats();
+          renderChats();
+          return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        const target = chat.messages[chat.messages.length - 1];
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, {stream: true});
+          const parts = buffer.split("\n");
+          buffer = parts.pop();
+          for (const line of parts) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const payload = trimmed.slice(5).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const json = JSON.parse(payload);
+              const delta = json.choices && json.choices[0] && json.choices[0].delta;
+              if (delta && delta.content) target.content += delta.content;
+              if (json.timings && json.timings.predicted_per_second) {
+                $("#chat-msg").textContent = json.timings.predicted_per_second.toFixed(1) + " ток/с";
+              }
+            } catch (error) { /* неполный JSON */ }
+          }
+          renderChats();
+        }
+        saveChats();
+      } finally {
+        send.disabled = false;
+      }
     });
 
     refresh();

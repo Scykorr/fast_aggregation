@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from fast_aggregation.constants import DEFAULT_VRAM_RESERVE_MB
@@ -42,6 +42,21 @@ class PairBody(BaseModel):
     http_port: int = 0
     rpc_port: int = 0
     cert_pem: str = ""
+
+
+class LimitsBody(BaseModel):
+    excluded: bool = False
+    max_temp_c: float | None = None
+    min_battery_percent: float | None = None
+    memory_reserve_mb: int | None = None
+    memory_cap_mb: int | None = None
+
+
+class ModelQuery(BaseModel):
+    path: str
+    ctx_size: int = 4096
+    allow_cpu: bool = False
+    reserve_mb: int = DEFAULT_VRAM_RESERVE_MB
 
 
 class ScanBody(BaseModel):
@@ -132,6 +147,48 @@ def create_coordinator_app(
         svg = segno.make(uri).svg_inline(scale=4)
         return Response(content=svg, media_type="image/svg+xml")
 
+    @app.get("/api/capacity")
+    def capacity(ctx: int = 4096, allow_cpu: bool = False, reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> dict:
+        return service.capacity_report(allow_cpu=allow_cpu, reserve_mb=reserve_mb, ctx=max(0, ctx))
+
+    @app.get("/api/models")
+    def models(ctx: int = 4096, allow_cpu: bool = False, reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> dict:
+        return {
+            "directory": str(service.models_dir) if service.models_dir else None,
+            "models": service.list_local_models(ctx, allow_cpu, reserve_mb),
+        }
+
+    @app.post("/api/models/preview")
+    def preview_model(body: ModelQuery) -> dict:
+        return service.describe_model(body.path, ctx=body.ctx_size, allow_cpu=body.allow_cpu, reserve_mb=body.reserve_mb)
+
+    @app.post("/api/nodes/{node_id}/limits")
+    def limits(node_id: str, body: LimitsBody) -> dict:
+        try:
+            saved = service.set_limits(node_id, body.model_dump())
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return saved
+
+    @app.get("/api/engine")
+    def engine() -> dict:
+        return service.engine_snapshot()
+
+    @app.get("/runtime/{asset_name}")
+    def runtime_asset(asset_name: str, request: Request) -> FileResponse:
+        if service.token:
+            if request.headers.get("authorization") != f"Bearer {service.token}":
+                raise HTTPException(status_code=401, detail="Нужен токен кластера")
+        from fast_aggregation.runtime.downloads import find_staged_archive
+
+        found = find_staged_archive(service.data_dir / "runtimes", asset_name)
+        if found is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Сборка не подготовлена на координаторе. Импортируйте архив локально.",
+            )
+        return FileResponse(found, filename=asset_name)
+
     @app.post("/api/scan")
     def scan(body: ScanBody) -> dict:
         try:
@@ -220,7 +277,7 @@ def create_coordinator_app(
         if service.phase != "running":
             raise HTTPException(
                 status_code=503,
-                detail="Кластер не запущен. Откройте дашборд и запустите модель.",
+                detail="Кластер не запущен. На вкладке «Модели» выберите локальный GGUF и нажмите «Запустить».",
             )
         url = f"http://127.0.0.1:{service.engine_port}/v1/{path}"
         body = await request.body()

@@ -38,6 +38,8 @@ class NodeSettings:
     vram_override_mb: int | None = None
     cuda_build: str | None = None
     release: str = ""
+    runtime_mirror: str | None = None
+    allow_download: bool = False
 
 
 class NodeService:
@@ -168,6 +170,8 @@ class NodeService:
                 self.settings.data_dir / "runtimes",
                 role="rpc",
                 cuda_build=self.settings.cuda_build,
+                allow_download=self.settings.allow_download,
+                mirror=self.settings.runtime_mirror,
             )
         except FastAggError:
             raise

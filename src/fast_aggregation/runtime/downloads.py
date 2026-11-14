@@ -32,6 +32,46 @@ def default_downloader(url: str, dest: Path) -> None:
         raise RuntimeError_(f"Не удалось скачать {url}: {exc}") from exc
 
 
+def archive_path(cache_root: Path, asset: ReleaseAsset) -> Path:
+    return cache_root / asset.tag / f"{asset.name}.archive"
+
+
+def find_staged_archive(cache_root: Path, asset_name: str) -> Path | None:
+    """Ищет заранее положенный архив. Имя файла — только basename."""
+
+    safe = Path(asset_name).name
+    if safe != asset_name or not safe:
+        return None
+    direct_candidates = [
+        cache_root / safe,
+        cache_root / f"{safe}.archive",
+    ]
+    for candidate in direct_candidates:
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    if not cache_root.is_dir():
+        return None
+    for candidate in cache_root.rglob(safe):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    for candidate in cache_root.rglob(f"{safe}.archive"):
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def stage_archive(cache_root: Path, tag: str, source: Path) -> Path:
+    """Копирует локальный архив в кэш координатора, без сети."""
+
+    if not source.is_file():
+        raise RuntimeError_(f"Файл сборки не найден: {source}")
+    dest = cache_root / tag / f"{source.name}.archive"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != dest.resolve():
+        shutil.copy2(source, dest)
+    return dest
+
+
 def ensure_runtime(
     tag: str,
     system: str,
@@ -42,10 +82,14 @@ def ensure_runtime(
     role: str = "rpc",
     cuda_build: str | None = None,
     downloader: Downloader | None = None,
+    allow_download: bool = False,
+    mirror: str | None = None,
 ) -> Path:
     """Возвращает каталог с распакованной сборкой.
 
     role — `rpc` (нужен ggml-rpc-server) или `server` (нужен llama-server).
+    Интернет не используется, пока allow_download не включён явно.
+    mirror — базовый URL координатора, например https://192.168.1.10:8080/runtime.
     """
 
     asset = resolve_asset(tag, system, arch, backend, cuda_build=cuda_build)
@@ -53,10 +97,23 @@ def ensure_runtime(
     if _has_binary(folder, system, role):
         return folder
     folder.mkdir(parents=True, exist_ok=True)
-    archive = cache_root / asset.tag / f"{asset.name}.archive"
-    fetch = downloader or default_downloader
+    archive = archive_path(cache_root, asset)
+    staged = find_staged_archive(cache_root, asset.name)
+    if staged is not None and staged.resolve() != archive.resolve():
+        shutil.copy2(staged, archive)
     if not archive.is_file() or archive.stat().st_size == 0:
-        fetch(asset.url, archive)
+        if mirror:
+            fetch = downloader or default_downloader
+            fetch(mirror.rstrip("/") + "/" + asset.name, archive)
+        elif allow_download:
+            fetch = downloader or default_downloader
+            fetch(asset.url, archive)
+        else:
+            raise RuntimeError_(
+                f"Нет локальной сборки {asset.name}. Положите архив в {archive.parent} "
+                "или получите его у координатора по локальной сети. "
+                "Загрузка из интернета выключена."
+            )
     extract_archive(archive, folder)
     _mark_executables(folder, system)
     if not _has_binary(folder, system, role):
