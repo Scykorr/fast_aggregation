@@ -6,19 +6,22 @@ import json
 
 from fast_aggregation.constants import DISCOVERY_MAGIC, PROTOCOL_VERSION
 from fast_aggregation.models import Announce
+from fast_aggregation.security.token import attach_mac, mac_ok
 
 
-def encode_announce(announce: Announce) -> bytes:
+def encode_announce(announce: Announce, token: str | None = None) -> bytes:
     payload = {
         "v": PROTOCOL_VERSION,
         "magic": DISCOVERY_MAGIC,
         "kind": "announce",
         **announce.to_dict(),
     }
+    if token:
+        payload = attach_mac(payload, token)
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def decode_announce(packet: bytes) -> Announce | None:
+def decode_announce(packet: bytes, token: str | None = None) -> Announce | None:
     try:
         text = packet.decode("utf-8")
         data = json.loads(text)
@@ -29,6 +32,8 @@ def decode_announce(packet: bytes) -> Announce | None:
     if data.get("magic") != DISCOVERY_MAGIC or data.get("v") != PROTOCOL_VERSION:
         return None
     if data.get("kind") != "announce":
+        return None
+    if token is not None and not mac_ok(data, token):
         return None
     try:
         http_port = int(data["http_port"])

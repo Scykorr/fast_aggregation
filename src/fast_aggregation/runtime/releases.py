@@ -53,6 +53,8 @@ def resolve_asset(
     os_key = _os_key(system)
     arch_key = _arch_key(arch)
     backend_key = backend.strip().lower()
+    if os_key == "android":
+        return _android_asset(tag, arch_key, backend_key)
     if os_key == "darwin":
         if backend_key not in {"metal", "cpu", "auto"}:
             raise RuntimeError_(
@@ -86,6 +88,24 @@ def resolve_asset(
     )
 
 
+def _android_asset(tag: str, arch: str, backend: str) -> ReleaseAsset:
+    if arch != "arm64":
+        raise RuntimeError_("В закреплённом релизе Android-сборка только arm64")
+    if backend in {"cpu", "auto"}:
+        name = f"llama-{tag}-bin-android-arm64.tar.gz"
+        chosen = "cpu"
+    elif backend == "opencl":
+        name = f"llama-{tag}-bin-android-arm64-snapdragon.tar.gz"
+        chosen = "opencl"
+    elif backend == "vulkan":
+        raise RuntimeError_(
+            "В b12359 нет Android-сборки Vulkan. Для Adreno укажите --backend opencl, иначе cpu."
+        )
+    else:
+        raise RuntimeError_(f"Бэкенд «{backend}» для Android в этом релизе не публикуется")
+    return ReleaseAsset(tag=tag, name=name, system="android", arch=arch, backend=chosen)
+
+
 def engine_backend(system: str) -> str:
     """Бэкенд бинарника llama-server на координаторе.
 
@@ -94,7 +114,8 @@ def engine_backend(system: str) -> str:
     на macOS — единственная Metal-сборка.
     """
 
-    if _os_key(system) == "darwin":
+    key = _os_key(system)
+    if key == "darwin":
         return "metal"
     return "cpu"
 
@@ -131,7 +152,7 @@ def _backend_suffix(system: str, arch: str, backend: str, cuda_build: str | None
 
 
 def _os_key(system: str) -> str:
-    mapping = {"windows": "windows", "linux": "linux", "darwin": "darwin"}
+    mapping = {"windows": "windows", "linux": "linux", "darwin": "darwin", "android": "android"}
     key = system.strip().lower()
     if key not in mapping:
         raise RuntimeError_(f"ОС «{system}» не поддерживается загрузчиком сборок")

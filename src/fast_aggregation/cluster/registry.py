@@ -28,6 +28,8 @@ class TrackedNode:
     rpc_error: str | None = None
     last_error: str | None = None
     manual: bool = False
+    rtt_ms: float | None = None
+    bandwidth_mbps: float | None = None
 
     def online(self, now: float, ttl: float) -> bool:
         return (now - self.last_seen) <= ttl
@@ -43,6 +45,8 @@ class TrackedNode:
             resources=self.resources,
             preferred_backend=self.preferred_backend,
             source="manual" if self.manual else self.source,
+            rtt_ms=self.rtt_ms,
+            bandwidth_mbps=self.bandwidth_mbps,
         )
 
     def to_public(self, now: float, ttl: float) -> dict:
@@ -66,6 +70,8 @@ class TrackedNode:
                 "error": self.rpc_error,
             },
             "last_error": self.last_error,
+            "rtt_ms": self.rtt_ms,
+            "bandwidth_mbps": self.bandwidth_mbps,
         }
 
 
@@ -114,6 +120,8 @@ class NodeRegistry:
         rpc_error: str | None = None,
         last_error: str | None = None,
         manual: bool | None = None,
+        rtt_ms: float | None = None,
+        bandwidth_mbps: float | None = None,
         seen: bool = True,
         now: float | None = None,
     ) -> TrackedNode:
@@ -153,6 +161,10 @@ class NodeRegistry:
                 current.last_error = last_error
             if manual is not None:
                 current.manual = manual
+            if rtt_ms is not None:
+                current.rtt_ms = rtt_ms
+            if bandwidth_mbps is not None:
+                current.bandwidth_mbps = bandwidth_mbps
             if seen:
                 current.last_seen = moment
             return current

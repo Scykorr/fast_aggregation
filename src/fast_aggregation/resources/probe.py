@@ -17,15 +17,17 @@ from fast_aggregation.resources.parsers import (
     parse_cpu_name_text,
     parse_macos_displays,
     parse_nvidia_smi,
+    parse_thermal_zones,
     parse_vulkan_memory,
     parse_vulkan_summary,
     parse_win32_video_controllers,
     read_linux_drm_gpus,
+    read_sysfs_thermal_c,
 )
 
 NVIDIA_SMI_ARGS = [
     "nvidia-smi",
-    "--query-gpu=name,memory.total,memory.free,driver_version",
+    "--query-gpu=name,memory.total,memory.free,driver_version,temperature.gpu,utilization.gpu",
     "--format=csv,noheader,nounits",
 ]
 
@@ -60,7 +62,7 @@ def probe_machine(
     deep_vulkan: bool = False,
     vulkan_dll: bool | None = None,
 ) -> MachineResources:
-    system_name = system or platform.system()
+    system_name = system or detect_system()
     active = runner or SubprocessRunner()
     raw = collect_outputs(
         active,
@@ -70,7 +72,7 @@ def probe_machine(
     )
     cpu_model, physical, logical = read_cpu(active, system_name, raw.powershell)
     total_mb, available_mb = read_memory()
-    return assemble_resources(
+    resources = assemble_resources(
         raw,
         system=system_name,
         arch=arch or normalize_arch(platform.machine()),
@@ -82,6 +84,7 @@ def probe_machine(
         ram_available_mb=available_mb,
         vulkan_dll=vulkan_dll if vulkan_dll is not None else _default_vulkan_dll(system_name),
     )
+    return attach_runtime_health(resources)
 
 
 def collect_outputs(
@@ -235,6 +238,54 @@ def _linux_cpu_model() -> str:
     return parsed or ""
 
 
+def detect_system() -> str:
+    prefix = os.environ.get("PREFIX", "")
+    if "com.termux" in prefix or Path("/data/data/com.termux/files/usr").exists():
+        return "Android"
+    return platform.system()
+
+
+def is_termux() -> bool:
+    return detect_system() == "Android"
+
+
+def attach_runtime_health(resources: MachineResources) -> MachineResources:
+    try:
+        resources.cpu_percent = float(psutil.cpu_percent(interval=0.0))
+    except Exception:
+        resources.cpu_percent = None
+    try:
+        battery = psutil.sensors_battery()
+    except Exception:
+        battery = None
+    if battery is not None:
+        resources.battery_percent = float(battery.percent) if battery.percent is not None else None
+        resources.power_plugged = bool(battery.power_plugged)
+        if resources.device_class == "unknown":
+            resources.device_class = "laptop"
+    elif resources.device_class == "unknown":
+        resources.device_class = "desktop"
+    if resources.os_name.lower() == "android" or is_termux():
+        resources.device_class = "phone"
+        resources.os_name = "Android"
+    if resources.temperature_c is None:
+        resources.temperature_c = read_sysfs_thermal_c(Path("/sys/class/thermal"))
+    if resources.temperature_c is None:
+        try:
+            sensors = psutil.sensors_temperatures() or {}
+        except Exception:
+            sensors = {}
+        hottest = [
+            entry.current
+            for entries in sensors.values()
+            for entry in entries
+            if getattr(entry, "current", None)
+        ]
+        if hottest:
+            resources.temperature_c = max(hottest)
+    return resources
+
+
 def _backends(
     *,
     system: str,
@@ -245,6 +296,19 @@ def _backends(
     vulkaninfo_present: bool,
     rocm_present: bool,
 ) -> list[BackendInfo]:
+    if system.lower() == "android":
+        opencl = Path("/sys/class/kgsl/kgsl-3d0").exists()
+        return [
+            BackendInfo("cpu", True, "Официальная Android-сборка llama.cpp, CPU"),
+            BackendInfo(
+                "opencl",
+                opencl,
+                "Adreno: /sys/class/kgsl" if opencl else "нет kgsl; для Mali в релизе нет Vulkan-архива",
+            ),
+            BackendInfo("vulkan", False, "В закреплённом релизе нет отдельной Android-сборки Vulkan"),
+            BackendInfo("cuda", False, "нет"),
+            BackendInfo("rocm", False, "нет"),
+        ]
     has_gpu = bool(gpus)
     vulkan_loader = vulkan_dll or vulkaninfo_present
     vulkan_detail: list[str] = []

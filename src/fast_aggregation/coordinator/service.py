@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import platform
 import threading
 import time
@@ -11,10 +12,13 @@ from pathlib import Path
 
 import httpx
 
+from fast_aggregation.cluster.fit import assert_fits, estimate_need
+from fast_aggregation.cluster.health import shed_reasons
 from fast_aggregation.cluster.planner import plan_placement
 from fast_aggregation.cluster.registry import NodeRegistry
-from fast_aggregation.constants import DEFAULT_LLAMA_RELEASE, ENGINE_PORT
+from fast_aggregation.constants import DEFAULT_LLAMA_RELEASE, ENGINE_PORT, NODE_HTTP_PORT
 from fast_aggregation.coordinator.client import HttpNodeClient, NodeClient
+from fast_aggregation.discovery.scan import hosts_in_cidr, scan_tcp
 from fast_aggregation.errors import FastAggError, RuntimeError_
 from fast_aggregation.models import PlacementPlan, resources_from_dict
 from fast_aggregation.node.service import NodeService
@@ -43,18 +47,24 @@ class CoordinatorService:
         health_check: HealthCheck | None = None,
         runtime_fetcher: Callable[[str, str, str, str], Path] | None = None,
         poll_interval: float = 3.0,
+        token: str = "",
+        pairing_code: str = "",
+        fingerprint: str = "",
     ) -> None:
         self.registry = registry
         self.data_dir = data_dir
         self.release = release
         self.engine_port = engine_port
         self.node = node
-        self.client = client or HttpNodeClient()
+        self.client = client or HttpNodeClient(token=token)
         self.background = background
         self._process_factory = process_factory or _default_process
         self._health_check = health_check
         self._runtime_fetcher = runtime_fetcher
         self.poll_interval = poll_interval
+        self.token = token
+        self.pairing_code = pairing_code
+        self.fingerprint = fingerprint
         self.phase = "idle"
         self.error: str | None = None
         self.plan: PlacementPlan | None = None
@@ -63,6 +73,15 @@ class CoordinatorService:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._launch: dict | None = None
+        self._restarts = 0
+        self._degrade_not_before = 0.0
+        self._poll_ticks = 0
+        self._pair_fails = 0
+        self._pair_locked_until = 0.0
+        self.public_host = "127.0.0.1"
+        self.public_port = 8080
+        self.trusted_bundle: Path | None = None
 
     def start_background(self) -> None:
         self.publish_local()
@@ -130,12 +149,49 @@ class CoordinatorService:
         if not self.registry.remove(node_id):
             raise FastAggError("Узел не найден")
 
-    def preview_plan(self, *, allow_cpu: bool, reserve_mb: int) -> PlacementPlan:
+    def preview_plan(self, *, allow_cpu: bool, reserve_mb: int, need_mb: float | None = None) -> PlacementPlan:
         return plan_placement(
             self.registry.cluster_nodes(),
             allow_cpu=allow_cpu,
             reserve_mb=reserve_mb,
+            need_mb=need_mb,
         )
+
+    def pair_code_ok(self, code: str) -> bool:
+        if not self.pairing_code:
+            return False
+        if time.time() < self._pair_locked_until:
+            return False
+        offered = code.strip().upper()
+        expected = self.pairing_code.upper()
+        if len(offered) != len(expected):
+            self._pair_fails += 1
+            return False
+        if hmac.compare_digest(expected, offered):
+            self._pair_fails = 0
+            return True
+        self._pair_fails += 1
+        if self._pair_fails >= 5:
+            self._pair_locked_until = time.time() + 30
+            self._pair_fails = 0
+        return False
+
+    def discover_subnet(self, cidr: str, port: int = NODE_HTTP_PORT) -> list[str]:
+        opened = scan_tcp(hosts_in_cidr(cidr), port)
+        found: list[str] = []
+        for host in opened:
+            try:
+                payload = self.client.fetch(host, port)
+            except FastAggError as exc:
+                found.append(f"{host}: порт открыт, снимок не прочитан ({exc})")
+                continue
+            if not payload.get("node_id"):
+                continue
+            payload["advertise_host"] = host
+            payload["http_port"] = port
+            self.apply_payload(payload, manual=True)
+            found.append(host)
+        return found
 
     def command_preview(
         self,
@@ -187,8 +243,24 @@ class CoordinatorService:
                 if self.node is not None:
                     self.node.refresh_resources()
                     self.publish_local()
-                plan = self.preview_plan(allow_cpu=allow_cpu, reserve_mb=reserve_mb)
+                need = estimate_need(model_path, ctx_size=ctx_size, parallel=parallel)
+                plan = self.preview_plan(
+                    allow_cpu=allow_cpu,
+                    reserve_mb=reserve_mb,
+                    need_mb=need.total_mb if need else None,
+                )
+                note = assert_fits(plan, need)
+                if note:
+                    plan.warnings.append(note)
                 self.plan = plan
+                self._launch = {
+                    "model_path": model_path,
+                    "hf_repo": hf_repo,
+                    "ctx_size": ctx_size,
+                    "parallel": parallel,
+                    "allow_cpu": allow_cpu,
+                    "reserve_mb": reserve_mb,
+                }
                 self._start_workers(plan)
                 binary = self._ensure_engine_binary()
                 argv = llama_server_argv(
@@ -223,16 +295,19 @@ class CoordinatorService:
                     raise
                 raise RuntimeError_(str(exc)) from exc
 
-    def stop_cluster(self) -> dict:
+    def stop_cluster(self, *, keep_launch: bool = False) -> dict:
         with self._lock:
             self.phase = "stopping"
             self._stop_processes()
             self.phase = "idle"
             self.plan = None
             self.error = None
+            if not keep_launch:
+                self._launch = None
+                self._restarts = 0
             return self.state()
 
-    def state(self) -> dict:
+    def state(self, *, reveal_pair: bool = False) -> dict:
         engine = None
         if self.engine is not None:
             engine = {
@@ -253,7 +328,13 @@ class CoordinatorService:
             "plan": plan,
             "nodes": self.registry.public_nodes(),
             "engine": engine,
+            "pairing": self._pairing_view() if reveal_pair else None,
         }
+
+    def _pairing_view(self) -> dict[str, str] | None:
+        if not self.pairing_code:
+            return None
+        return {"code": self.pairing_code, "fingerprint": self.fingerprint}
 
     def _start_workers(self, plan: PlacementPlan) -> None:
         launched: set[str] = set()
@@ -365,6 +446,47 @@ class CoordinatorService:
             payload["advertise_host"] = node.host
             payload["http_port"] = node.http_port
             self.apply_payload(payload, manual=manual)
+            self._poll_ticks += 1
+            measurer = getattr(self.client, "measure", None)
+            if measurer and self._poll_ticks % 5 == 0:
+                try:
+                    sample = measurer(node.host, node.http_port)
+                    self.registry.upsert_details(
+                        node.node_id,
+                        rtt_ms=float(sample["rtt_ms"]),
+                        bandwidth_mbps=float(sample["bandwidth_mbps"]),
+                        seen=False,
+                    )
+                except (FastAggError, OSError, TypeError, KeyError):
+                    pass
+        self._maybe_degrade()
+
+    def _maybe_degrade(self) -> None:
+        if self.phase != "running" or self.plan is None or not self._launch:
+            return
+        if time.monotonic() < self._degrade_not_before:
+            return
+        reasons = shed_reasons(self.plan, self.registry.cluster_nodes())
+        if not reasons:
+            return
+        self._degrade_not_before = time.monotonic() + 20
+        self._restarts += 1
+        launch = dict(self._launch)
+        message = "; ".join(reason for _node_id, reason in reasons)
+        if self._restarts > 3:
+            self.stop_cluster()
+            self.phase = "error"
+            self.error = "Остановлено после повторных отказов узлов: " + message
+            return
+        self.stop_cluster(keep_launch=True)
+        try:
+            self.start_cluster(**launch)
+        except FastAggError as exc:
+            self.phase = "error"
+            self.error = f"Узел выбыл ({message}), заново модель не помещается: {exc}"
+            return
+        if self.plan is not None:
+            self.plan.warnings.append("Слои перераспределены: " + message)
 
 
 def parse_address(value: str) -> tuple[str, int]:

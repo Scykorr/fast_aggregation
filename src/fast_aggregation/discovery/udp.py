@@ -33,6 +33,7 @@ class DiscoveryService:
         enable_broadcast: bool = True,
         extra_targets: list[tuple[str, int]] | None = None,
         on_announce: OnAnnounce | None = None,
+        token: str | None = None,
     ) -> None:
         self.announce = announce
         self.port = port
@@ -41,6 +42,7 @@ class DiscoveryService:
         self.enable_broadcast = enable_broadcast
         self.extra_targets = list(extra_targets or [])
         self.on_announce = on_announce
+        self.token = token
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -65,7 +67,7 @@ class DiscoveryService:
     def send_once(self) -> None:
         if self.announce is None:
             return
-        packet = encode_announce(self.announce)
+        packet = encode_announce(self.announce, self.token)
         targets = self._targets()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -111,7 +113,7 @@ class DiscoveryService:
                 except OSError as exc:
                     log.debug("discovery recv failed: %s", exc)
                     continue
-                announce = decode_announce(data)
+                announce = decode_announce(data, self.token)
                 if announce is None:
                     continue
                 if self.announce is not None and announce.node_id == self.announce.node_id:

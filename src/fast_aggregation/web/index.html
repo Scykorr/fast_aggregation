@@ -95,7 +95,10 @@
       <h1>fastagg</h1>
       <div class="muted">Распределённый инференс в локальной сети, движок llama.cpp RPC</div>
     </div>
-    <div>Состояние: <span id="phase" class="phase">…</span></div>
+    <div>
+      <div>Состояние: <span id="phase" class="phase">…</span></div>
+      <div id="pair" class="muted"></div>
+    </div>
   </header>
   <main>
     <section>
@@ -178,6 +181,22 @@
       ).join("<br>");
     }
 
+    function linkInfo(node) {
+      if (node.bandwidth_mbps == null && node.rtt_ms == null) return "";
+      const bw = node.bandwidth_mbps == null ? "н/д" : node.bandwidth_mbps + " Мбит/с";
+      const rtt = node.rtt_ms == null ? "н/д" : node.rtt_ms + " мс";
+      return `<div class="muted">канал ${esc(bw)}, RTT ${esc(rtt)}</div>`;
+    }
+
+    function healthInfo(res) {
+      if (!res) return "";
+      const parts = [];
+      if (res.temperature_c != null) parts.push(Math.round(res.temperature_c) + " °C");
+      if (res.battery_percent != null) parts.push("батарея " + Math.round(res.battery_percent) + "%");
+      if (res.device_class && res.device_class !== "unknown") parts.push(res.device_class);
+      return parts.length ? `<div class="muted">${esc(parts.join(", "))}</div>` : "";
+    }
+
     function renderNodes(nodes) {
       if (!nodes.length) {
         nodesEl.innerHTML = "<p class='muted'>Пока никого. Запустите fastagg node на других компьютерах этой сети или добавьте адрес вручную.</p>";
@@ -193,7 +212,7 @@
           <td>${mb(res.ram_available_mb)} своб.<div class="muted">из ${mb(res.ram_total_mb)}</div></td>
           <td>${gpus(res.gpus)}</td>
           <td>${backends(res.backends)}<div class="muted">предпочтение: ${esc(node.preferred_backend)}</div></td>
-          <td>${node.rpc && node.rpc.running ? "RPC слушает" : "RPC выключен"}${node.rpc && node.rpc.backend ? " · " + esc(node.rpc.backend) : ""}${node.last_error ? `<div class="error">${esc(node.last_error)}</div>` : ""}</td>
+          <td>${node.rpc && node.rpc.running ? "RPC слушает" : "RPC выключен"}${node.rpc && node.rpc.backend ? " · " + esc(node.rpc.backend) : ""}${linkInfo(node)}${healthInfo(res)}${node.last_error ? `<div class="error">${esc(node.last_error)}</div>` : ""}</td>
           <td>${node.age_sec} с</td>
           <td>${node.source === "manual" ? `<button class="ghost" data-remove="${esc(node.node_id)}">Убрать</button>` : ""}</td>
         </tr>`;
@@ -235,6 +254,12 @@
       const data = await response.json();
       phaseEl.textContent = data.phase + (data.error ? " — " + data.error : "");
       phaseEl.className = "phase " + data.phase;
+      const pair = document.querySelector("#pair");
+      if (data.pairing && data.pairing.code) {
+        pair.textContent = "Код сопряжения: " + data.pairing.code + (data.pairing.fingerprint ? " · отпечаток " + data.pairing.fingerprint : "");
+      } else {
+        pair.textContent = "";
+      }
       renderNodes(data.nodes || []);
       if (data.plan) renderPlan(data.plan, null);
       const lines = data.engine && data.engine.log_tail;

@@ -33,3 +33,22 @@ DEFAULT_CPU_RAM_FRACTION = 0.5
 MIN_DEVICE_MEMORY_MB = 256
 
 DISCOVERY_MAGIC = "FAAG1"
+
+# Пороги безопасности. Температура — градусы Цельсия, батарея — проценты.
+TEMP_THROTTLE_C = 80.0
+TEMP_CRITICAL_C = 92.0
+BATTERY_LAPTOP_THROTTLE = 40
+BATTERY_LAPTOP_CRITICAL = 15
+BATTERY_PHONE_MIN = 35
+CPU_LOAD_THROTTLE = 90.0
+
+# Канал, относительно которого вес узла не снижается.
+GOOD_LINK_MBPS = 200.0
+GOOD_LINK_RTT_MS = 8.0
+# Медленнее 20% лучшего канала или медленнее этого порога — потолок доли слоёв.
+SLOW_LINK_MBPS = 30.0
+SLOW_LINK_SHARE_CAP = 0.10
+
+# На телефоне оставляем больше ОЗУ системе.
+PHONE_RAM_RESERVE_MB = 1536
+PHONE_RAM_FRACTION = 0.35

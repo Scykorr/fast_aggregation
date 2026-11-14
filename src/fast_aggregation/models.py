@@ -15,6 +15,8 @@ def resources_from_dict(data: dict[str, Any]) -> MachineResources:
             vram_free_mb=_optional_int(item.get("vram_free_mb")),
             driver=item.get("driver"),
             source=str(item.get("source") or ""),
+            temperature_c=_optional_float(item.get("temperature_c")),
+            utilization=_optional_float(item.get("utilization")),
         )
         for item in data.get("gpus") or []
         if isinstance(item, dict)
@@ -39,6 +41,11 @@ def resources_from_dict(data: dict[str, Any]) -> MachineResources:
         ram_available_mb=int(data.get("ram_available_mb") or 0),
         gpus=gpus,
         backends=backends,
+        cpu_percent=_optional_float(data.get("cpu_percent")),
+        temperature_c=_optional_float(data.get("temperature_c")),
+        battery_percent=_optional_float(data.get("battery_percent")),
+        power_plugged=_optional_bool(data.get("power_plugged")),
+        device_class=str(data.get("device_class") or "unknown"),
     )
 
 
@@ -46,6 +53,20 @@ def _optional_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
     return int(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in {"1", "true", "yes"}
 
 
 def to_plain(value: Any) -> Any:
@@ -66,6 +87,8 @@ class GpuDevice:
     vram_free_mb: int | None = None
     driver: str | None = None
     source: str = ""
+    temperature_c: float | None = None
+    utilization: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -93,6 +116,11 @@ class MachineResources:
     ram_available_mb: int
     gpus: list[GpuDevice] = field(default_factory=list)
     backends: list[BackendInfo] = field(default_factory=list)
+    cpu_percent: float | None = None
+    temperature_c: float | None = None
+    battery_percent: float | None = None
+    power_plugged: bool | None = None
+    device_class: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +134,11 @@ class MachineResources:
             "ram_available_mb": self.ram_available_mb,
             "gpus": [gpu.to_dict() for gpu in self.gpus],
             "backends": [backend.to_dict() for backend in self.backends],
+            "cpu_percent": self.cpu_percent,
+            "temperature_c": self.temperature_c,
+            "battery_percent": self.battery_percent,
+            "power_plugged": self.power_plugged,
+            "device_class": self.device_class,
         }
 
     def backend_names(self) -> set[str]:
@@ -141,6 +174,8 @@ class ClusterNode:
     resources: MachineResources | None
     preferred_backend: str = "auto"
     source: str = "discovery"
+    rtt_ms: float | None = None
+    bandwidth_mbps: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +188,8 @@ class ClusterNode:
             "resources": self.resources.to_dict() if self.resources else None,
             "preferred_backend": self.preferred_backend,
             "source": self.source,
+            "rtt_ms": self.rtt_ms,
+            "bandwidth_mbps": self.bandwidth_mbps,
         }
 
 
@@ -169,6 +206,8 @@ class PlannedDevice:
     kind: str
     memory_mb: int
     share: float
+    weight: int = 0
+    bandwidth_mbps: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -192,6 +231,8 @@ class PlacementPlan:
 
     @property
     def tensor_split(self) -> list[int]:
+        if self.devices and all(device.weight > 0 for device in self.devices):
+            return [device.weight for device in self.devices]
         return [device.memory_mb for device in self.devices]
 
     @property

@@ -43,6 +43,8 @@ def parse_nvidia_smi(text: str) -> list[GpuDevice]:
         total = _to_int(cells[1]) if len(cells) > 1 else None
         free = _to_int(cells[2]) if len(cells) > 2 else None
         driver = cells[3] if len(cells) > 3 and cells[3] else None
+        temperature = _to_float(cells[4]) if len(cells) > 4 else None
+        utilization = _to_float(cells[5]) if len(cells) > 5 else None
         if total is None:
             continue
         devices.append(
@@ -53,6 +55,8 @@ def parse_nvidia_smi(text: str) -> list[GpuDevice]:
                 vram_free_mb=free,
                 driver=driver,
                 source="nvidia-smi",
+                temperature_c=temperature,
+                utilization=utilization,
             )
         )
     return devices
@@ -372,6 +376,56 @@ def _parse_size_mb(value: str) -> int | None:
     if unit.startswith("g") or unit.startswith("г"):
         return int(number * 1024)
     return int(number)
+
+
+def parse_thermal_zones(text: str) -> float | None:
+    """WMI MSAcpi_ThermalZoneTemperature: десятые доли кельвина."""
+
+    payload = _load_json_payload(text)
+    if isinstance(payload, dict) and "thermal" in payload:
+        payload = payload["thermal"]
+    if isinstance(payload, dict):
+        items = [payload]
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        return None
+    values: list[float] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("CurrentTemperature")
+        if raw is None:
+            continue
+        try:
+            celsius = float(raw) / 10.0 - 273.15
+        except (TypeError, ValueError):
+            continue
+        if 1.0 < celsius < 120.0:
+            values.append(celsius)
+    return max(values) if values else None
+
+
+def read_sysfs_thermal_c(root: Path) -> float | None:
+    if not root.is_dir():
+        return None
+    values: list[float] = []
+    for path in root.glob("thermal_zone*/temp"):
+        try:
+            raw = int(path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        celsius = raw / 1000.0 if raw > 200 else float(raw)
+        if 1.0 < celsius < 120.0:
+            values.append(celsius)
+    return max(values) if values else None
+
+
+def _to_float(value: str) -> float | None:
+    number = _to_int(value)
+    if number is None:
+        return None
+    return float(number)
 
 
 def _to_int(value: str) -> int | None:

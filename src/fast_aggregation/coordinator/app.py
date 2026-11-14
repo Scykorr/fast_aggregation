@@ -34,6 +34,21 @@ class StartBody(BaseModel):
     reserve_mb: int = DEFAULT_VRAM_RESERVE_MB
 
 
+class PairBody(BaseModel):
+    code: str = Field(min_length=1)
+    node_id: str = ""
+    name: str = ""
+    advertise_host: str = ""
+    http_port: int = 0
+    rpc_port: int = 0
+    cert_pem: str = ""
+
+
+class ScanBody(BaseModel):
+    cidr: str = Field(min_length=1)
+    port: int = 47000
+
+
 class PlanQuery(BaseModel):
     allow_cpu: bool = False
     reserve_mb: int = DEFAULT_VRAM_RESERVE_MB
@@ -80,8 +95,50 @@ def create_coordinator_app(
         return {"status": "ok", "phase": service.phase}
 
     @app.get("/api/state")
-    def state() -> dict:
-        return service.state()
+    def state(request: Request) -> dict:
+        host = request.client.host if request.client else ""
+        return service.state(reveal_pair=host in {"127.0.0.1", "::1"})
+
+    @app.post("/api/pair")
+    def pair(body: PairBody) -> dict:
+        if not service.pair_code_ok(body.code):
+            raise HTTPException(status_code=401, detail="Неверный код сопряжения")
+        if body.cert_pem:
+            _remember_node_cert(service, body.node_id or body.name or "node", body.cert_pem)
+        if body.node_id and body.advertise_host and body.http_port:
+            service.registry.upsert_details(
+                body.node_id,
+                name=body.name or body.node_id,
+                host=body.advertise_host,
+                http_port=body.http_port,
+                rpc_port=body.rpc_port,
+                manual=True,
+            )
+        return {"token": service.token, "fingerprint": service.fingerprint}
+
+    @app.get("/api/pair/qr.svg")
+    def pair_qr(request: Request) -> Response:
+        host = request.client.host if request.client else ""
+        if host not in {"127.0.0.1", "::1"}:
+            raise HTTPException(status_code=403, detail="QR сопряжения доступен только с этого компьютера")
+        view = service.state(reveal_pair=True).get("pairing")
+        if not view:
+            raise HTTPException(status_code=404, detail="Сопряжение выключено")
+        import segno
+
+        from fast_aggregation.security.token import join_uri
+
+        uri = join_uri(service.public_host, service.public_port, view["code"], view["fingerprint"])
+        svg = segno.make(uri).svg_inline(scale=4)
+        return Response(content=svg, media_type="image/svg+xml")
+
+    @app.post("/api/scan")
+    def scan(body: ScanBody) -> dict:
+        try:
+            found = service.discover_subnet(body.cidr, body.port)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"found": found}
 
     @app.post("/api/plan")
     def plan(body: PlanQuery) -> dict:
@@ -200,6 +257,21 @@ def create_coordinator_app(
         return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=media)
 
     return app
+
+
+def _remember_node_cert(service: CoordinatorService, node_id: str, pem: str) -> None:
+    if "BEGIN CERTIFICATE" not in pem:
+        raise HTTPException(status_code=400, detail="Сертификат узла должен быть в PEM")
+    bundle = getattr(service, "trusted_bundle", None)
+    if bundle is None:
+        return
+    path = service.data_dir / "trusted" / f"{node_id}.pem"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(pem, encoding="utf-8")
+    existing = Path(bundle).read_text(encoding="utf-8") if Path(bundle).is_file() else ""
+    if pem.strip() not in existing:
+        with Path(bundle).open("a", encoding="utf-8") as handle:
+            handle.write("\n" + pem.strip() + "\n")
 
 
 def _blank(value: str | None) -> str | None:
