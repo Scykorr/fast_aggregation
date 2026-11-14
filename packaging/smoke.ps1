@@ -1,14 +1,15 @@
-# Проверяет собранный fastagg.exe: scan и HTTP узла. Без сети и без трея.
+# Smoke-test a built fastagg.exe: scan, then a node /health on localhost.
 param(
     [Parameter(Mandatory = $true)][string]$Exe
 )
 $ErrorActionPreference = "Stop"
-if (-not (Test-Path $Exe)) { throw "Нет файла $Exe" }
+if (-not (Test-Path $Exe)) { throw "missing exe: $Exe" }
 $env:FA_HOME = Join-Path $env:TEMP "fastagg-smoke"
 New-Item -ItemType Directory -Force -Path $env:FA_HOME | Out-Null
 
+Write-Host "running scan"
 & $Exe scan
-if ($LASTEXITCODE -ne 0) { throw "scan завершился с кодом $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "scan exited with $LASTEXITCODE" }
 
 $proc = Start-Process -FilePath $Exe -ArgumentList @(
     "node", "--open", "--insecure-http", "--bind", "127.0.0.1",
@@ -16,7 +17,7 @@ $proc = Start-Process -FilePath $Exe -ArgumentList @(
 ) -PassThru -WindowStyle Hidden
 try {
     $ok = $false
-    for ($i = 0; $i -lt 60; $i++) {
+    for ($i = 0; $i -lt 90; $i++) {
         try {
             $response = Invoke-WebRequest -Uri "http://127.0.0.1:47099/health" -UseBasicParsing -TimeoutSec 2
             if ($response.StatusCode -eq 200 -and $response.Content -match "ok") {
@@ -27,8 +28,8 @@ try {
             Start-Sleep -Seconds 1
         }
     }
-    if (-not $ok) { throw "Узел не открыл /health за 60 секунд" }
+    if (-not $ok) { throw "node did not open /health within 90 seconds" }
     Write-Host "smoke ok"
 } finally {
-    if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+    if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
 }

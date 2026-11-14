@@ -1,10 +1,10 @@
 name: Windows installer
 
 on:
-  push:
   pull_request:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    tags: ["v*"]
 
 jobs:
   package:
@@ -26,7 +26,7 @@ jobs:
         run: pyinstaller packaging/fastagg.spec --noconfirm --distpath dist --workpath build/pyinstaller
 
       - name: Smoke test the exe
-        run: powershell -ExecutionPolicy Bypass -File packaging/smoke.ps1 -Exe dist\fastagg.exe
+        run: pwsh -ExecutionPolicy Bypass -File packaging/smoke.ps1 -Exe dist\fastagg.exe
 
       - name: Download offline llama.cpp CPU and Vulkan archives
         run: |

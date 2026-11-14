@@ -1,8 +1,10 @@
 name: Android APK
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
 
 jobs:
   apk:
@@ -15,11 +17,22 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Install Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
-        run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+      - name: Install Android command-line tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/android-sdk"
+          curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+          rm -rf /tmp/android-cmd
+          unzip -q /tmp/cmdtools.zip -d /tmp/android-cmd
+          rm -rf "$HOME/android-sdk/cmdline-tools"
+          mkdir -p "$HOME/android-sdk/cmdline-tools"
+          mv /tmp/android-cmd/cmdline-tools "$HOME/android-sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> "$GITHUB_ENV"
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$HOME/android-sdk/platform-tools" >> "$GITHUB_PATH"
+          yes | "$HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$HOME/android-sdk" --licenses >/dev/null || true
+          "$HOME/android-sdk/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$HOME/android-sdk" --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Embed llama.cpp Android binaries
         run: bash android/fetch-runtimes.sh
@@ -29,6 +42,9 @@ jobs:
           curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.10.2-bin.zip
           unzip -q /tmp/gradle.zip -d /opt
           echo "/opt/gradle-8.10.2/bin" >> "$GITHUB_PATH"
+
+      - name: Point Gradle at the SDK
+        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
       - name: Unit tests and debug APK
         working-directory: android
