@@ -26,6 +26,9 @@ jobs:
         run: pyinstaller packaging/fastagg.spec --noconfirm --distpath dist --workpath build/pyinstaller
 
       - name: Smoke test the exe
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: pwsh -ExecutionPolicy Bypass -File packaging/smoke.ps1 -Exe dist\fastagg.exe
 
       - name: Download offline llama.cpp CPU, Vulkan and CUDA archives

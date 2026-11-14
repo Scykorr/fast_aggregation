@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Exe
 )
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 if (-not (Test-Path $Exe)) { throw "missing exe: $Exe" }
 $env:FA_HOME = Join-Path $env:TEMP "fastagg-smoke"
 New-Item -ItemType Directory -Force -Path $env:FA_HOME | Out-Null

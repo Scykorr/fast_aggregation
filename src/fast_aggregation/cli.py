@@ -42,7 +42,21 @@ from fast_aggregation.runtime.downloads import ensure_runtime, executable, stage
 from fast_aggregation.runtime.releases import engine_backend
 
 
+def _console_safe() -> None:
+    """Не падать, если консоль Windows не умеет кириллицу (cp1252 в CI)."""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _console_safe()
     parser = argparse.ArgumentParser(
         prog="fastagg",
         description="Распределённый запуск LLM в локальной сети через llama.cpp RPC.",
