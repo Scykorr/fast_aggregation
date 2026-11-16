@@ -410,6 +410,7 @@ class CoordinatorService:
                         + tail
                     )
                 self.phase = "running"
+                self.schedule_bench()
                 return self.state()
             except Exception as exc:
                 self.error = str(exc)
@@ -422,6 +423,9 @@ class CoordinatorService:
     def stop_cluster(self, *, keep_launch: bool = False) -> dict:
         with self._lock:
             self.phase = "stopping"
+            run = getattr(self, "_bench", None)
+            if run is not None:
+                run.cancel()
             self._stop_processes()
             self.phase = "idle"
             self.plan = None
@@ -453,6 +457,16 @@ class CoordinatorService:
             "nodes": self.registry.public_nodes(),
             "engine": engine,
             "pairing": self._pairing_view() if reveal_pair else None,
+            "bench": self.bench_view(),
+            "links": [
+                {
+                    "node_id": node.get("node_id"),
+                    "name": node.get("name"),
+                    "bandwidth_mbps": node.get("bandwidth_mbps"),
+                    "rtt_ms": node.get("rtt_ms"),
+                }
+                for node in self.registry.public_nodes()
+            ],
         }
 
     def set_limits(self, node_id: str, raw: dict) -> dict:
@@ -475,6 +489,11 @@ class CoordinatorService:
             plan_dict = None
             error = str(exc)
         capacity = summarize_capacity(plan, self.registry.cluster_nodes())
+        from fast_aggregation.cluster.bench import annotate_speeds, load_history, mark_stale
+
+        signature = self.cluster_signature()
+        history = mark_stale(load_history(self.data_dir / "bench.json"), signature)
+        recommendations = annotate_speeds(recommend(capacity, ctx=ctx), history, signature)
         return {
             "raw_vram_mib": capacity.raw_vram_mib,
             "raw_ram_mib": capacity.raw_ram_mib,
@@ -485,7 +504,8 @@ class CoordinatorService:
             "notes": list(capacity.notes),
             "plan": plan_dict,
             "plan_error": error,
-            "recommendations": recommend(capacity, ctx=ctx),
+            "recommendations": recommendations,
+            "bench": self.bench_view(),
         }
 
     def list_local_models(self, ctx: int, allow_cpu: bool, reserve_mb: int) -> list[dict]:
@@ -671,6 +691,112 @@ class CoordinatorService:
             except FastAggError as exc:
                 self.registry.mark_error(node_id, str(exc))
         self._started_remote = []
+
+    def note_chat(self, active: bool) -> None:
+        current = getattr(self, "_chat_active", 0)
+        if active:
+            self._chat_active = current + 1
+            run = getattr(self, "_bench", None)
+            if run is not None and run.status == "running":
+                run.cancel()
+        else:
+            self._chat_active = max(0, current - 1)
+
+    def cluster_signature(self) -> str:
+        from fast_aggregation.cluster.bench import cluster_signature
+
+        if self.plan is None:
+            return cluster_signature([], [])
+        nodes = [(device.node_id, device.backend) for device in self.plan.devices]
+        return cluster_signature(nodes, list(self.plan.tensor_split))
+
+    def bench_view(self) -> dict:
+        from fast_aggregation.cluster.bench import load_history, mark_stale
+
+        run = getattr(self, "_bench", None)
+        signature = self.cluster_signature()
+        history = mark_stale(load_history(self.data_dir / "bench.json"), signature)
+        current = history[0] if history else None
+        payload = run.view() if run is not None else {"status": "idle", "error": None, "result": None}
+        payload["latest"] = current
+        payload["history"] = history[:8]
+        return payload
+
+    def start_bench(self, *, manual: bool = True) -> dict:
+        from fast_aggregation.cluster.bench import BenchRun, bench_key, file_fingerprint, find_cached, load_history, mark_stale, quant_from_name, save_history
+
+        if getattr(self, "_chat_active", 0):
+            raise FastAggError("Сейчас идёт ответ в чате. Замер начнётся, когда чат освободится.")
+        if self.phase != "running":
+            raise FastAggError("Кластер не запущен.")
+        launch = self._launch or {}
+        model_path = launch.get("model_path") or ""
+        path = Path(model_path) if model_path else None
+        name = path.name if path else str(launch.get("hf_repo") or "model")
+        file_fp = file_fingerprint(path) if path and path.is_file() else "nofile"
+        quant = quant_from_name(name)
+        ctx = int(launch.get("ctx_size") or 0)
+        signature = self.cluster_signature()
+        key = bench_key(file_fp, quant, ctx, signature)
+        history = mark_stale(load_history(self.data_dir / "bench.json"), signature)
+        cached = find_cached(history, key, signature)
+        if cached and not manual:
+            return {"status": "cached", "result": cached, "latest": cached, "history": history[:8]}
+        weight_mib = int(path.stat().st_size / (1024 * 1024)) if path and path.is_file() else 0
+        layers = 32
+        if path and path.is_file():
+            from fast_aggregation.cluster.fit import read_gguf_metadata
+
+            layers = int(read_gguf_metadata(path).get("block_count") or 32)
+
+        def on_done(parsed: dict) -> dict:
+            from datetime import datetime, timezone
+
+            record = {
+                "key": key,
+                "model_name": name,
+                "file_fp": file_fp,
+                "quant": quant,
+                "ctx": ctx,
+                "signature": signature,
+                "weight_mib": weight_mib,
+                "layers": layers,
+                "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "stale": False,
+                **parsed,
+            }
+            rows = [record] + [item for item in load_history(self.data_dir / "bench.json") if item.get("key") != key]
+            save_history(self.data_dir / "bench.json", rows)
+            return record
+
+        run = getattr(self, "_bench", None)
+        if run is None:
+            run = BenchRun()
+            self._bench = run
+        run.start(f"http://127.0.0.1:{self.engine_port}", on_done)
+        return run.view()
+
+    def cancel_bench(self) -> dict:
+        run = getattr(self, "_bench", None)
+        if run is not None:
+            run.cancel()
+        return self.bench_view()
+
+    def schedule_bench(self) -> None:
+        def wait_and_run() -> None:
+            for _ in range(120):
+                if self.phase != "running":
+                    return
+                if getattr(self, "_chat_active", 0):
+                    time.sleep(0.5)
+                    continue
+                try:
+                    self.start_bench(manual=False)
+                except FastAggError:
+                    return
+                return
+
+        threading.Thread(target=wait_and_run, name="fa-bench-auto", daemon=True).start()
 
     def model_puller(self):
         from fast_aggregation.models_pull import ModelPuller

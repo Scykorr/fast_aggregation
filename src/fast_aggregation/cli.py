@@ -103,6 +103,10 @@ def _dispatch(argv: list[str] | None = None) -> int:
     join.add_argument("--rpc-port", type=int, default=RPC_PORT)
     join.add_argument("--name", default="")
 
+    bench = sub.add_parser("bench", help="Короткий замер скорости llama-server, около 200 токенов")
+    bench.add_argument("--url", default="http://127.0.0.1:18080", help="Базовый адрес llama-server")
+    bench.add_argument("--data-dir", default="")
+
     pull = sub.add_parser("pull", help="Скачать GGUF с Hugging Face в папку моделей")
     pull.add_argument("url", help="Ссылка на файл .gguf или на репозиторий")
     pull.add_argument("--file", default="", help="Имя файла или подпись квантования, если в репозитории их несколько")
@@ -151,6 +155,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return _runtime_import(args)
     if args.command == "pull":
         return _pull(args)
+    if args.command == "bench":
+        return _bench(args)
     if args.command == "tray":
         return _tray(args)
     parser.error("Неизвестная команда")
@@ -824,6 +830,34 @@ def _tray(args: argparse.Namespace) -> int:
         open_label="Подключиться к координатору" if args.role == "node" else "Открыть дашборд",
         on_copy=(lambda: _copy_pairing_links(data)) if args.role == "coordinator" else None,
     )
+    return 0
+
+
+def _bench(args: argparse.Namespace) -> int:
+    from fast_aggregation.cluster.bench import BenchRun, parse_timings
+
+    holder: dict = {}
+
+    def on_done(parsed: dict) -> dict:
+        holder["parsed"] = parsed
+        return parsed
+
+    run = BenchRun()
+    try:
+        run.start(args.url, on_done)
+    except FastAggError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    thread = run._thread
+    if thread is not None:
+        thread.join(timeout=70)
+    view = run.view()
+    if view["status"] != "done":
+        print(view.get("error") or view["status"], file=sys.stderr)
+        return 1
+    parsed = holder.get("parsed") or parse_timings({})
+    print(f"префилл: {parsed['prefill_tps']} ток/с, токенов {parsed['prompt_tokens']}")
+    print(f"генерация: {parsed['generation_tps']} ток/с, токенов {parsed['generated_tokens']}")
     return 0
 
 

@@ -371,6 +371,7 @@ def create_coordinator_app(
                 status_code=503,
                 detail="Кластер не запущен. На вкладке «Модели» выберите локальный GGUF и нажмите «Запустить».",
             )
+        service.note_chat(True)
         url = f"http://127.0.0.1:{service.engine_port}/v1/{path}"
         body = await request.body()
         headers = {
@@ -392,7 +393,23 @@ def create_coordinator_app(
             )
         except httpx.HTTPError as exc:
             await client.aclose()
+            service.note_chat(False)
             raise HTTPException(status_code=502, detail=f"llama-server недоступен: {exc}") from exc
+
+    @app.post("/api/bench")
+    def start_bench() -> dict:
+        try:
+            return service.start_bench(manual=True)
+        except FastAggError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/bench")
+    def bench_state() -> dict:
+        return service.bench_view()
+
+    @app.post("/api/bench/cancel")
+    def cancel_bench() -> dict:
+        return service.cancel_bench()
 
         async def chunks() -> AsyncIterator[bytes]:
             try:
@@ -401,6 +418,7 @@ def create_coordinator_app(
             finally:
                 await upstream.aclose()
                 await client.aclose()
+                service.note_chat(False)
 
         media = upstream.headers.get("content-type")
         return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=media)

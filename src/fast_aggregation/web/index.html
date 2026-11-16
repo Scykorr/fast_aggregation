@@ -218,23 +218,21 @@
           ["Медленный канал", capacity.slowest_mbps == null ? "н/д" : capacity.slowest_mbps + " Мбит/с"]
         ].map((item) => `<div class="card"><span class="muted">${esc(item[0])}</span><b>${esc(item[1])}</b></div>`).join("");
         $("#notes").textContent = (capacity.notes || []).join(" ");
-      renderPair();
         const rows = (capacity.recommendations || []).map((row) => `<tr>
           <td>${esc(row.label)}</td>
           <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
           <td>${mb(row.need_mib)}</td>
-          <td>${row.fits ? row.tokens_per_second + " ток/с" : "—"}</td>
+          <td>${speedText(row)}</td>
           <td>${row.max_context || "—"}</td>
         </tr>`).join("");
-        $("#recs").innerHTML = `<table><thead><tr><th>Модель</th><th></th><th>Нужно</th><th>Оценка скорости</th><th>Макс. контекст</th></tr></thead><tbody>${rows}</tbody></table>`;
+        $("#recs").innerHTML = `<table><thead><tr><th>Модель</th><th></th><th>Нужно</th><th>Скорость</th><th>Макс. контекст</th></tr></thead><tbody>${rows}</tbody></table>`;
       }
+      renderPair();
       const layers = (engine.layers && engine.layers.length) ? engine.layers : ((state.plan && state.plan.devices) || []);
       $("#layers").innerHTML = layers.length ? "<ul>" + layers.map((device) =>
         `<li>${esc(device.node_name)} · ${esc(device.name)} · ${device.memory_mb} МиБ · ${(device.share * 100).toFixed(1)}%</li>`
       ).join("") + "</ul>" : "Модель не запущена.";
-      const slot = (engine.slots || [])[0] || {};
-      const tps = slot.timings && (slot.timings.predicted_per_second || slot.timings.predicted_n);
-      $("#speed").textContent = tps ? "Слоты llama-server отвечают, смотрите скорость в чате после ответа." : "Скорость появится в ответе чата.";
+      renderBench();
       const log = state.engine && state.engine.log_tail;
       $("#log").textContent = log && log.length ? log.join("\n") : "Процесс ещё не запускался.";
       renderNodes();
@@ -323,6 +321,47 @@
         ${qr}
         ${rows}
         <button type="button" id="new-code" class="ghost">Новый код</button>`;
+    }
+
+    function speedText(row) {
+      const estimate = row.estimate_tps != null ? row.estimate_tps : row.tokens_per_second;
+      const lines = [];
+      if (estimate != null) lines.push(estimate + " оценка");
+      if (row.speed_kind === "оценка по замеру" && row.calibrated_tps != null) {
+        lines.push(row.calibrated_tps + " оценка по замеру");
+        if (row.calibration_source) lines.push(row.calibration_source);
+      }
+      return lines.join("<br>") || "—";
+    }
+    function renderBench() {
+      const bench = state.bench || {};
+      const latest = bench.latest;
+      const links = (state.links || []).map((item) =>
+        esc(item.name) + ": " + (item.bandwidth_mbps == null ? "н/д" : item.bandwidth_mbps + " Мбит/с")
+      ).join(", ");
+      let text = "Замера ещё нет. Оценка в таблице — формула, не замер.";
+      if (bench.status === "running") text = "Идёт замер. Пока он не кончится, чат его отменит.";
+      if (bench.status === "error") text = "Замер не удался: " + (bench.error || "");
+      if (latest && latest.generation_tps != null) {
+        const kind = latest.stale ? "замер устарел" : "замер";
+        const day = String(latest.measured_at || "").slice(0, 10);
+        text = kind + ": префилл " + latest.prefill_tps + " ток/с, генерация " + latest.generation_tps + " ток/с, " + day;
+      }
+      $("#speed").innerHTML = esc(text) + "<br><span class='muted'>Каналы RPC: " + (links || "ещё не измерялись") + "</span><br>"
+        + "<button type='button' id='run-bench' class='ghost'>Замерить скорость</button> "
+        + "<button type='button' id='cancel-bench' class='ghost'>Отмена</button>";
+      const run = document.querySelector("#run-bench");
+      const cancel = document.querySelector("#cancel-bench");
+      if (run) run.onclick = async () => {
+        const response = await fetch("/api/bench", {method: "POST"});
+        const data = await response.json();
+        if (!response.ok) $("#speed").insertAdjacentHTML("beforeend", "<div class='bad'>" + esc(data.detail || "") + "</div>");
+        refresh();
+      };
+      if (cancel) cancel.onclick = async () => {
+        await fetch("/api/bench/cancel", {method: "POST"});
+        refresh();
+      };
     }
 
     function renderChats() {
