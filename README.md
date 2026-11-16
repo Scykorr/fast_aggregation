@@ -46,10 +46,12 @@ APK — узел для телефона: ввод ссылки `fastagg://` и�
 2. На стационарном откройте консоль из трея. В ней будут код сопряжения и отпечаток. Запомните адрес из `ipconfig`, например `192.168.1.10`.
 3. На ноутбуке, если трей ещё не сопряжён, в ярлыке «Узел» или в PowerShell из каталога установки:
 
+Окно узла само спрашивает ссылку. Если вызываете команду из PowerShell, после установки откройте новое окно: установщик добавляет каталог программы в PATH. Пока окно старое, `fastagg` может быть «не распознан». Тогда полный путь:
+
 ```powershell
-.\fastagg.exe scan
-.\fastagg.exe join --url "fastagg://192.168.1.10:47080?code=КОД&fp=ОТПЕЧАТОК"
-.\fastagg.exe node --name LAPTOP
+& "$env:ProgramFiles\fastagg\fastagg.exe" scan
+& "$env:ProgramFiles\fastagg\fastagg.exe" join --url "fastagg://192.168.1.10:47080?code=КОД&fp=ОТПЕЧАТОК"
+& "$env:ProgramFiles\fastagg\fastagg.exe" node --name LAPTOP
 ```
 
 `scan` должен показать имя GeForce, объём VRAM и строку `CUDA: ... 12.4` или `13.5`. На Palit со свежим драйвером 580+ ожидается 13.5. Если RPC не стартует, на этой машине повторите `node --cuda-build 12.4` или `13.5` — второй архив уже лежит локально.
@@ -252,6 +254,17 @@ fastagg coordinator --name DESKTOP-A
 
 ```powershell
 fastagg join --url "fastagg://192.168.1.10:47080?code=КОД&fp=ОТПЕЧАТОК"
+```
+
+Если PowerShell пишет, что `fastagg` не распознан, откройте новое окно или вызовите программу по полному пути:
+
+```powershell
+& "$env:ProgramFiles\fastagg\fastagg.exe" join --url "fastagg://192.168.1.10:47080?code=КОД&fp=ОТПЕЧАТОК"
+```
+
+В консоли узла тот же шаг без отдельной команды: вставьте ссылку или код в строку «Ссылка или код». После удачного сопряжения узел сразу начинает слушать, а следующий автозапуск уже знает токен.
+
+```powershell
 fastagg node --name DESKTOP-B
 ```
 

@@ -1,3 +1,4 @@
+import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -99,6 +100,27 @@ def test_pairing_card_uses_lan_addresses_not_loopback(tmp_path: Path, monkeypatc
     rotated = service.rotate_pairing_code()
     assert rotated["code"] != "Q9TD93RU"
     assert (tmp_path / "pairing_code").read_text(encoding="utf-8") == rotated["code"]
+
+
+def test_pair_prompt_accepts_a_link_or_a_code():
+    from fast_aggregation.cli import classify_pair_input, want_pair_prompt
+
+    assert classify_pair_input("  ") == "empty"
+    assert classify_pair_input("fastagg://10.32.237.25:47080?code=Q9TD93RU&fp=aa") == "link"
+    assert classify_pair_input("q9td93ru") == "code"
+    assert classify_pair_input("не ссылка") == "invalid"
+    args = argparse.Namespace(open=False, interactive=True)
+    assert want_pair_prompt(args, "already") is False
+    args.open = True
+    assert want_pair_prompt(args, "") is False
+
+
+def test_installer_adds_app_dir_to_path_and_removes_it():
+    iss = Path("packaging/fastagg.iss").read_text(encoding="utf-8")
+    assert "ChangesEnvironment=yes" in iss
+    assert "AddInstallDirToPath" in iss
+    assert "RemoveInstallDirFromPath" in iss
+    assert "WM_SETTINGCHANGE" in iss
 
 
 def test_dashboard_shows_the_join_card_and_firewall_is_not_private_only():

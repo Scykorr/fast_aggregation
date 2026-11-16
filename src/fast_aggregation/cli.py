@@ -226,10 +226,103 @@ def _scan(as_json: bool) -> int:
     return 0
 
 
+_PAIR_CODE = __import__("re").compile(r"^[A-Za-z0-9]{6,8}$")
+
+
+def classify_pair_input(text: str) -> str:
+    raw = text.strip()
+    if not raw:
+        return "empty"
+    if raw.lower().startswith("fastagg://"):
+        return "link"
+    if _PAIR_CODE.fullmatch(raw):
+        return "code"
+    return "invalid"
+
+
+def want_pair_prompt(args: argparse.Namespace, token: str) -> bool:
+    if token or getattr(args, "open", False):
+        return False
+    if os.environ.get("FA_NO_PAUSE") == "1" or os.environ.get("CI"):
+        return False
+    if not getattr(args, "interactive", True):
+        return False
+    return sys.stdin is not None and bool(sys.stdin.isatty())
+
+
+def _link_from_code(address: str, code: str) -> str:
+    from fast_aggregation.security.certs import fingerprint_pem
+    from fast_aggregation.security.pin import _peer_pem
+    from fast_aggregation.security.token import join_uri
+
+    text = address.strip()
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    text = text.split("/", 1)[0]
+    if ":" not in text:
+        raise FastAggError("Нужен адрес координатора вида 10.32.237.25:47080")
+    host, raw_port = text.rsplit(":", 1)
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise FastAggError("Порт координатора должен быть числом") from exc
+    fingerprint = fingerprint_pem(_peer_pem(host, port))
+    return join_uri(host, port, code.strip().upper(), fingerprint)
+
+
+def _prompt_for_pairing(args: argparse.Namespace, data: Path) -> str:
+    if not want_pair_prompt(args, ""):
+        return ""
+    print(
+        "Узел ещё не сопряжён. Вставьте ссылку fastagg:// или код из 6–8 символов.\n"
+        "Пустой ввод — только слушать сеть: сопрячь можно позже кнопкой на координаторе."
+    )
+    try:
+        entered = input("Ссылка или код: ").strip()
+    except EOFError:
+        return ""
+    kind = classify_pair_input(entered)
+    if kind == "empty":
+        return ""
+    if kind == "invalid":
+        print("Не разобрал ввод. Ожидалась ссылка fastagg:// или код.", file=sys.stderr)
+        return ""
+    url = entered
+    if kind == "code":
+        try:
+            address = input("Адрес координатора (host:port): ").strip()
+        except EOFError:
+            return ""
+        try:
+            url = _link_from_code(address, entered)
+        except FastAggError as exc:
+            print(exc, file=sys.stderr)
+            return ""
+    join_args = argparse.Namespace(
+        url=url,
+        code="",
+        fingerprint="",
+        data_dir=str(data),
+        advertise=getattr(args, "advertise", ""),
+        name=getattr(args, "name", ""),
+        http_port=getattr(args, "http_port", NODE_HTTP_PORT),
+        rpc_port=getattr(args, "rpc_port", RPC_PORT),
+    )
+    if _join(join_args) != 0:
+        print("Сопряжение не сохранено. Узел запустится и будет доступен для кнопки «Сопрячь».")
+        return ""
+    saved = load_membership(data) or {}
+    print("Сопряжение запомнено. Следующий автозапуск подхватит его сам.")
+    return str(saved.get("token") or "")
+
+
 def _serve_node(args: argparse.Namespace) -> int:
     data = _data_dir(args)
     membership = load_membership(data)
     token = str(membership.get("token") or "") if membership else ""
+    if not token:
+        token = _prompt_for_pairing(args, data)
+        membership = load_membership(data) or membership
     service = _build_node(args, http_port=args.http_port)
     service.settings.allow_download = bool(args.allow_download)
     mirror = args.runtime_from.strip()
@@ -643,6 +736,7 @@ def _tray(args: argparse.Namespace) -> int:
         pause=False,
         lock_held=False,
         server_holder=holder,
+        interactive=False,
     )
 
     def serve() -> None:

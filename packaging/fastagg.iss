@@ -24,6 +24,7 @@ ArchitecturesInstallIn64BitMode=x64
 SetupIconFile=fastagg.ico
 UninstallDisplayIcon={app}\{#MyAppExe}
 PrivilegesRequired=admin
+ChangesEnvironment=yes
 WizardStyle=modern
 
 [Languages]
@@ -67,3 +68,96 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""fastagg-node"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""fastagg-rpc"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""fastagg-dashboard"""; Flags: runhidden
+
+[Code]
+const
+  EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  WM_SETTINGCHANGE = $001A;
+  HWND_BROADCAST = $FFFF;
+  SMTO_ABORTIFHUNG = $0002;
+
+function SendMessageTimeout(hWnd: HWND; Msg: UINT; wParam: Longint; lParam: String; fuFlags: UINT; uTimeout: UINT; var lpdwResult: DWORD): DWORD;
+  external 'SendMessageTimeoutW@user32.dll stdcall';
+
+function PathHasDir(Path, Dir: String): Boolean;
+begin
+  Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Path) + ';') > 0;
+end;
+
+procedure BroadcastEnvironmentChange;
+var
+  Dummy: DWORD;
+begin
+  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, Dummy);
+end;
+
+procedure AddInstallDirToPath;
+var
+  OrigPath, Dir: String;
+begin
+  Dir := ExpandConstant('{app}');
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', OrigPath) then
+    OrigPath := '';
+  if PathHasDir(OrigPath, Dir) then
+    exit;
+  if OrigPath = '' then
+    RegWriteExpandStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Dir)
+  else
+    RegWriteExpandStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', OrigPath + ';' + Dir);
+  BroadcastEnvironmentChange;
+end;
+
+function RemoveDirFromPath(const OrigPath, Dir: String): String;
+var
+  Items, Item: String;
+  P: Integer;
+begin
+  Items := OrigPath;
+  Result := '';
+  while Items <> '' do
+  begin
+    P := Pos(';', Items);
+    if P = 0 then
+    begin
+      Item := Items;
+      Items := '';
+    end
+    else
+    begin
+      Item := Copy(Items, 1, P - 1);
+      Delete(Items, 1, P);
+    end;
+    if (Item <> '') and (CompareText(Item, Dir) <> 0) then
+    begin
+      if Result <> '' then
+        Result := Result + ';';
+      Result := Result + Item;
+    end;
+  end;
+end;
+
+procedure RemoveInstallDirFromPath;
+var
+  OrigPath, Dir, Updated: String;
+begin
+  Dir := ExpandConstant('{app}');
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', OrigPath) then
+    exit;
+  if not PathHasDir(OrigPath, Dir) then
+    exit;
+  Updated := RemoveDirFromPath(OrigPath, Dir);
+  RegWriteExpandStringValue(HKEY_LOCAL_MACHINE, EnvironmentKey, 'Path', Updated);
+  BroadcastEnvironmentChange;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    AddInstallDirToPath;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemoveInstallDirFromPath;
+end;
