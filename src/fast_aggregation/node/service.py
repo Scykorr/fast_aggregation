@@ -64,6 +64,7 @@ class NodeService:
         self.rpc_error: str | None = None
         self.cuda_build_used: str | None = None
         self.cuda_reason: str | None = None
+        self._aux: dict[str, dict] = {}
         self.resources = self.refresh_resources()
 
     def refresh_resources(self) -> MachineResources:
@@ -151,6 +152,31 @@ class NodeService:
             self.rpc_backend = chosen
             self.rpc_error = None
             return self.describe()["rpc"]
+
+    def start_aux(self, role: str, model_path: str, port: int, extra_args: list[str]) -> dict:
+        folder = self._fetch_runtime(self.settings.release or "b12359", self.settings.preferred_backend or "cpu")
+        binary = executable(folder, self.resources.os_name, "server")
+        argv = [str(binary), "--host", "0.0.0.0", "--port", str(port), "--model", model_path, *extra_args]
+        log_path = self.settings.data_dir / "logs" / f"aux-{role}.log"
+        process = self._process_factory(argv, binary.parent, log_path)
+        process.start()
+        if not self._port_ready(port):
+            process.stop()
+            raise RuntimeError_(f"llama-server роли {role} не открыл порт {port}")
+        self._aux[role] = {"process": process, "port": port, "model": model_path, "running": True}
+        return {"role": role, "port": port, "running": True, "model": model_path}
+
+    def stop_aux(self, role: str) -> dict:
+        item = self._aux.pop(role, None)
+        if item and item.get("process") is not None:
+            item["process"].stop()
+        return {"role": role, "running": False}
+
+    def aux_status(self) -> dict:
+        return {
+            role: {"port": item["port"], "model": item["model"], "running": bool(item.get("process") and item["process"].running())}
+            for role, item in self._aux.items()
+        }
 
     def stop_rpc(self) -> dict:
         with self._lock:

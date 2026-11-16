@@ -78,6 +78,7 @@
     <button type="button" data-tab="nodes">Узлы</button>
     <button type="button" data-tab="models">Модели</button>
     <button type="button" data-tab="chat">Чат</button>
+    <button type="button" data-tab="api">Интеграции</button>
   </nav>
   <main>
     <div id="overview" class="panel on">
@@ -147,6 +148,13 @@
         <p id="models-dir" class="muted">Папка моделей координатора. Её можно сменить флагом --models-dir.</p>
         <div id="file-msg" class="bad"></div>
         <div id="files">Папка не задана.</div>
+      </section>
+    </div>
+    <div id="api" class="panel">
+      <section>
+        <h2>Интеграции / API</h2>
+        <p class="muted">Порт для RAG на этой же машине. По умолчанию только localhost. Из Docker в WSL используйте host.docker.internal и host-gateway.</p>
+        <div id="api-box">Загрузка…</div>
       </section>
     </div>
     <div id="chat" class="panel">
@@ -651,6 +659,32 @@
         send.disabled = false;
       }
     });
+
+    function renderIntegration(info) {
+      if (!info) return;
+      const scheme = "ht" + "tp";
+      const port = info.api_port || 11435;
+      const hostUrl = scheme + "://127.0.0.1:" + port;
+      const wslUrl = scheme + "://host.docker.internal:" + port;
+      const lines = [
+        "OLLAMA_HOST=" + hostUrl,
+        "OLLAMA_MODEL=fastagg",
+        "EMBEDDING_URL=" + hostUrl + "/v1/embeddings",
+        "RERANK_URL=" + hostUrl + "/v1/rerank",
+        "FASTAGG_TOKEN="
+      ];
+      const roleLine = (title, role) => title + ": " + (role && role.available ? "да, узел " + (role.node_id || "") : "нет") + (role && role.replacing ? " (перенос)" : "");
+      $("#api-box").innerHTML = "<p>Хост: " + esc(hostUrl) + "</p><p>Из контейнера WSL: " + esc(wslUrl) + "</p>"
+        + "<pre>" + esc(lines.join("\n")) + "</pre>"
+        + "<p>" + esc(roleLine("Модель", info.llm)) + "</p>"
+        + "<p>" + esc(roleLine("Эмбеддинги", info.embedding)) + "</p>"
+        + "<p>" + esc(roleLine("Реранкер", info.reranker)) + "</p>"
+        + "<p class='muted'>Очередь: активно " + ((info.queue || {}).active || 0) + ", ждёт " + ((info.queue || {}).waiting || 0) + "</p>"
+        + "<button type='button' class='ghost' id='copy-env'>Копировать env</button>";
+      const button = document.querySelector("#copy-env");
+      if (button) button.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); } catch (error) {} };
+    }
+    fetch("/api/integration").then((response) => response.json()).then(renderIntegration).catch(() => {});
 
     refresh();
     setInterval(refresh, 2000);

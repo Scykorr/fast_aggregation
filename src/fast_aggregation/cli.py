@@ -92,6 +92,9 @@ def _dispatch(argv: list[str] | None = None) -> int:
     coord.add_argument("--insecure-http", action="store_true")
     coord.add_argument("--allow-download", action="store_true", help="Разрешить скачивание llama.cpp из интернета")
     coord.add_argument("--models-dir", default="", help="Локальная папка с GGUF. Интернет для моделей не нужен")
+    coord.add_argument("--api-bind", default="127.0.0.1", help="Адрес Ollama-совместимого порта. 0.0.0.0 — доступ из WSL")
+    coord.add_argument("--api-port", type=int, default=11435)
+    coord.add_argument("--api-token", default="", help="Bearer для совместимого порта. Пусто — без проверки")
 
     join = sub.add_parser("join", help="Сопрячь этот компьютер с координатором")
     join.add_argument("--url", required=True, help="fastagg://... или https://host:port")
@@ -102,6 +105,22 @@ def _dispatch(argv: list[str] | None = None) -> int:
     join.add_argument("--http-port", type=int, default=NODE_HTTP_PORT)
     join.add_argument("--rpc-port", type=int, default=RPC_PORT)
     join.add_argument("--name", default="")
+
+    api_cmd = sub.add_parser("api", help="Совместимый порт Ollama/OpenAI")
+    api_sub = api_cmd.add_subparsers(dest="api_command", required=True)
+    api_status = api_sub.add_parser("status")
+    api_status.add_argument("--port", type=int, default=11435)
+    api_status.add_argument("--token", default="")
+
+    roles_cmd = sub.add_parser("roles", help="Роли эмбеддингов и реранкера")
+    roles_sub = roles_cmd.add_subparsers(dest="roles_command", required=True)
+    roles_sub.add_parser("list").add_argument("--port", type=int, default=11435)
+    roles_assign = roles_sub.add_parser("assign")
+    roles_assign.add_argument("role", choices=("embedding", "rerank"))
+    roles_assign.add_argument("--node", default="")
+    roles_assign.add_argument("--model", default="", help="Путь к GGUF на выбранном узле")
+    roles_assign.add_argument("--port", type=int, default=11435)
+    roles_assign.add_argument("--token", default="")
 
     bench = sub.add_parser("bench", help="Короткий замер скорости llama-server, около 200 токенов")
     bench.add_argument("--url", default="http://127.0.0.1:18080", help="Базовый адрес llama-server")
@@ -157,6 +176,10 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return _pull(args)
     if args.command == "bench":
         return _bench(args)
+    if args.command == "api":
+        return _api_status(args)
+    if args.command == "roles":
+        return _roles(args)
     if args.command == "tray":
         return _tray(args)
     parser.error("Неизвестная команда")
@@ -579,6 +602,9 @@ def _run_coordinator(
     holder = getattr(args, "server_holder", None)
     if isinstance(holder, dict):
         holder["server"] = server
+    service.api_bind = args.api_bind
+    service.api_port = args.api_port
+    _start_compat_api(service, args.api_bind, args.api_port, args.api_token)
     try:
         server.run()
     except SystemExit as exc:
@@ -831,6 +857,58 @@ def _tray(args: argparse.Namespace) -> int:
         on_copy=(lambda: _copy_pairing_links(data)) if args.role == "coordinator" else None,
     )
     return 0
+
+
+def _start_compat_api(service, bind: str, port: int, token: str) -> None:
+    import threading
+
+    import uvicorn
+
+    from fast_aggregation.api.bridge import ServiceBridge
+    from fast_aggregation.api.compat import create_compat_app
+
+    app = create_compat_app(ServiceBridge(service), token=token, queue=service.generation_queue())
+    config = uvicorn.Config(app, host=bind, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    threading.Thread(target=server.run, name="fa-ollama", daemon=True).start()
+    if bind not in {"127.0.0.1", "localhost", "::1"}:
+        print(
+            f"Совместимый порт слушает {bind}:{port}. Для доступа из WSL откройте TCP {port} "
+            "в брандмауэре для профилей private и public."
+        )
+
+
+def _api_status(args: argparse.Namespace) -> int:
+    import json
+
+    import httpx
+
+    headers = {"Authorization": f"Bearer {args.token}"} if args.token else {}
+    try:
+        response = httpx.get(f"http://127.0.0.1:{args.port}/fastagg/health", headers=headers, timeout=3)
+    except httpx.HTTPError:
+        print("Совместимый порт не отвечает. Запущен ли координатор?", file=sys.stderr)
+        return 1
+    print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+    return 0 if response.status_code < 400 else 1
+
+
+def _roles(args: argparse.Namespace) -> int:
+    import json
+
+    import httpx
+
+    headers = {"Authorization": f"Bearer {getattr(args, 'token', '')}"} if getattr(args, "token", "") else {}
+    if args.roles_command == "assign":
+        response = httpx.post(
+            f"http://127.0.0.1:{args.port}/fastagg/roles",
+            json={"role": args.role, "node_id": args.node, "model_path": args.model},
+            headers=headers,
+            timeout=10,
+        )
+        print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+        return 0 if response.status_code < 400 else 1
+    return _api_status(argparse.Namespace(port=args.port, token=getattr(args, "token", "")))
 
 
 def _bench(args: argparse.Namespace) -> int:

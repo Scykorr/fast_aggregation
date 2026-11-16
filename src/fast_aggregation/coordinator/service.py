@@ -156,11 +156,70 @@ class CoordinatorService:
 
     def preview_plan(self, *, allow_cpu: bool, reserve_mb: int, need_mb: float | None = None) -> PlacementPlan:
         return plan_placement(
-            self.registry.cluster_nodes(),
+            self._nodes_after_aux(),
             allow_cpu=allow_cpu,
             reserve_mb=reserve_mb,
             need_mb=need_mb,
         )
+
+    def generation_queue(self):
+        from fast_aggregation.api.queue import GenerationQueue
+
+        queue = getattr(self, "_gen_queue", None)
+        if queue is None:
+            queue = GenerationQueue()
+            self._gen_queue = queue
+        return queue
+
+    def _nodes_after_aux(self):
+        from dataclasses import replace
+
+        from fast_aggregation.cluster.roles import reserve_mb
+
+        nodes = self.registry.cluster_nodes()
+        reserved = reserve_mb(getattr(self, "_roles", {}) or {})
+        if not reserved:
+            return nodes
+        adjusted = []
+        for node in nodes:
+            take = reserved.get(node.node_id, 0)
+            resources = node.resources
+            if take <= 0 or resources is None:
+                adjusted.append(node)
+                continue
+            left = take
+            gpus = []
+            for gpu in resources.gpus:
+                free = gpu.vram_free_mb or 0
+                used = min(free, left)
+                gpus.append(replace(gpu, vram_free_mb=free - used))
+                left -= used
+            ram = max(0, resources.ram_available_mb - left)
+            adjusted.append(replace(node, resources=replace(resources, gpus=gpus, ram_available_mb=ram)))
+        return adjusted
+
+    def integration_view(self) -> dict:
+        roles = getattr(self, "_roles", {}) or {}
+        ctx = int((self._launch or {}).get("ctx_size") or 4096)
+        model = ""
+        if self._launch and self._launch.get("model_path"):
+            model = Path(str(self._launch["model_path"])).name
+        return {
+            "api_port": getattr(self, "api_port", 11435),
+            "api_bind": getattr(self, "api_bind", "127.0.0.1"),
+            "effective_ctx": ctx,
+            "llm": {
+                "available": self.phase == "running",
+                "model": model or "fastagg",
+                "effective_ctx": ctx,
+                "replacing": False,
+            },
+            "embedding": _role_public(roles.get("embedding")),
+            "reranker": _role_public(roles.get("rerank")),
+            "queue": self.generation_queue().snapshot(),
+            "failover_tries": 3,
+            "failover_budget_sec": 90,
+        }
 
     def pair_code_ok(self, code: str) -> bool:
         if not self.pairing_code:
@@ -725,7 +784,7 @@ class CoordinatorService:
     def start_bench(self, *, manual: bool = True) -> dict:
         from fast_aggregation.cluster.bench import BenchRun, bench_key, file_fingerprint, find_cached, load_history, mark_stale, quant_from_name, save_history
 
-        if getattr(self, "_chat_active", 0):
+        if getattr(self, "_chat_active", 0) or self.generation_queue().busy:
             raise FastAggError("Сейчас идёт ответ в чате. Замер начнётся, когда чат освободится.")
         if self.phase != "running":
             raise FastAggError("Кластер не запущен.")
@@ -782,19 +841,152 @@ class CoordinatorService:
             run.cancel()
         return self.bench_view()
 
+    def assign_role(self, role: str, node_id: str | None = None, model_path: str = "") -> dict:
+        from fast_aggregation.api.bridge import candidates_for
+        from fast_aggregation.cluster.roles import SUGGESTED_ROLES, place_auxiliary
+
+        if role not in SUGGESTED_ROLES:
+            raise FastAggError("Роль должна быть embedding или rerank")
+        spec = dict(SUGGESTED_ROLES[role])
+        picked = None
+        if node_id:
+            picked = next((item for item in candidates_for(self) if item.node_id == node_id), None)
+            if picked is None:
+                raise FastAggError("Узел не в кластере")
+        else:
+            picked = place_auxiliary(candidates_for(self), int(spec["need_mb"]))
+            if picked is None:
+                raise FastAggError("Нет узла со свободной памятью вне основного разреза")
+        tracked = self.registry.get(picked.node_id)
+        spec["node_id"] = picked.node_id
+        spec["host"] = tracked.host if tracked else ""
+        spec["status"] = "assigned"
+        spec["replacing"] = False
+        spec["tries"] = 0
+        if model_path:
+            spec["model_path"] = model_path
+            spec["detail"] = "Узел выбран, llama-server запустится при следующем опросе"
+        else:
+            spec["detail"] = "Узел выбран. Укажите model_path к GGUF на этом узле, затем роль поднимется при опросе."
+        roles = getattr(self, "_roles", None)
+        if roles is None:
+            roles = {}
+            self._roles = roles
+        roles[role] = spec
+        return spec
+
+    def reconcile_aux(self) -> None:
+        """Если узел роли пропал, до трёх раз переносит llama-server на другой узел."""
+
+        roles = getattr(self, "_roles", None) or {}
+        if not roles:
+            return
+        nodes = {item.node_id: item for item in self.registry.cluster_nodes()}
+        for spec in roles.values():
+            node = nodes.get(str(spec.get("node_id") or ""))
+            online = bool(node and node.online)
+            status = spec.get("status") or "down"
+            if status == "down":
+                continue
+            if online and status == "up":
+                spec["tries"] = 0
+                spec["replacing"] = False
+                continue
+            if online and status == "assigned":
+                self._try_launch_assigned(spec, node)
+                continue
+            self._failover_role(spec, nodes)
+
+    def _try_launch_assigned(self, spec: dict, node) -> None:
+        if not spec.get("model_path"):
+            spec["detail"] = "Узел выбран. Укажите model_path к GGUF на этом узле."
+            return
+        spec["replacing"] = True
+        try:
+            self._launch_aux(node.host, node.http_port, spec)
+        except FastAggError as exc:
+            spec["replacing"] = False
+            spec["status"] = "assigned"
+            spec["detail"] = str(exc)
+            return
+        spec["status"] = "up"
+        spec["replacing"] = False
+        spec["tries"] = 0
+        spec["detail"] = "llama-server роли запущен"
+
+    def _failover_role(self, spec: dict, nodes: dict) -> None:
+        from fast_aggregation.api.bridge import candidates_for
+        from fast_aggregation.cluster.roles import place_auxiliary
+
+        tries = int(spec.get("tries") or 0) + 1
+        spec["tries"] = tries
+        spec["replacing"] = True
+        spec["status"] = "replacing"
+        if tries > 3:
+            spec["status"] = "down"
+            spec["replacing"] = False
+            spec["detail"] = "Узел роли недоступен, исчерпаны 3 попытки переноса"
+            return
+        previous = str(spec.get("node_id") or "")
+        alive = {item.node_id for item in nodes.values() if item.online and item.node_id != previous}
+        pool = [item for item in candidates_for(self) if item.node_id in alive]
+        picked = place_auxiliary(pool, int(spec.get("need_mb") or 0))
+        if picked is None:
+            spec["detail"] = f"попытка {tries} из 3: нет узла со свободной памятью"
+            if tries >= 3:
+                spec["status"] = "down"
+                spec["replacing"] = False
+            return
+        target = nodes[picked.node_id]
+        try:
+            self._launch_aux(target.host, target.http_port, spec)
+        except FastAggError as exc:
+            spec["detail"] = f"попытка {tries} из 3: {exc}"
+            if tries >= 3:
+                spec["status"] = "down"
+                spec["replacing"] = False
+            return
+        spec["node_id"] = picked.node_id
+        spec["host"] = target.host
+        spec["status"] = "up"
+        spec["replacing"] = False
+        spec["tries"] = 0
+        spec["detail"] = "роль перенесена"
+
+    def _launch_aux(self, host: str, http_port: int, spec: dict) -> None:
+        model = str(spec.get("model_path") or "")
+        if not model:
+            raise FastAggError("На узле не указан локальный путь к GGUF роли")
+        payload = {
+            "role": spec.get("role"),
+            "model_path": model,
+            "port": int(spec.get("port") or 0),
+            "extra_args": list(spec.get("argv") or []),
+        }
+        starter = getattr(self, "aux_starter", None)
+        if starter is not None:
+            starter(host, http_port, payload)
+            return
+        method = getattr(self.client, "start_aux", None)
+        if method is None:
+            raise FastAggError("Клиент узла не запускает вспомогательный llama-server")
+        method(host, http_port, payload)
+
     def schedule_bench(self) -> None:
         def wait_and_run() -> None:
             for _ in range(120):
                 if self.phase != "running":
                     return
-                if getattr(self, "_chat_active", 0):
+                if getattr(self, "_chat_active", 0) or self.generation_queue().busy:
                     time.sleep(0.5)
                     continue
                 try:
-                    self.start_bench(manual=False)
+                    started = self.start_bench(manual=False)
                 except FastAggError:
+                    time.sleep(0.5)
+                    continue
+                if started.get("status") in {"running", "cached", "done"}:
                     return
-                return
 
         threading.Thread(target=wait_and_run, name="fa-bench-auto", daemon=True).start()
 
@@ -857,6 +1049,7 @@ class CoordinatorService:
                     )
                 except (FastAggError, OSError, TypeError, KeyError):
                     pass
+        self.reconcile_aux()
         self._maybe_degrade()
 
     def _maybe_degrade(self) -> None:
@@ -885,6 +1078,24 @@ class CoordinatorService:
             return
         if self.plan is not None:
             self.plan.warnings.append("Слои перераспределены: " + message)
+
+
+def _role_public(spec: dict | None) -> dict:
+    if not spec:
+        return {"available": False, "replacing": False, "detail": "роль не назначена"}
+    status = spec.get("status") or "down"
+    return {
+        "available": status == "up",
+        "replacing": bool(spec.get("replacing")),
+        "status": status,
+        "node_id": spec.get("node_id"),
+        "port": spec.get("port"),
+        "embedding_model_id": spec.get("embedding_model_id"),
+        "gguf": spec.get("gguf"),
+        "quant": spec.get("quant"),
+        "dim": spec.get("dim"),
+        "detail": spec.get("detail") or "",
+    }
 
 
 def parse_address(value: str) -> tuple[str, int]:

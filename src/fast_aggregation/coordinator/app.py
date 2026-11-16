@@ -371,7 +371,12 @@ def create_coordinator_app(
                 status_code=503,
                 detail="Кластер не запущен. На вкладке «Модели» выберите локальный GGUF и нажмите «Запустить».",
             )
-        service.note_chat(True)
+        queue = service.generation_queue()
+        needs_slot = request.method in {"POST", "PUT", "PATCH"}
+        if needs_slot and not queue.acquire():
+            raise HTTPException(status_code=429, detail="Очередь генерации заполнена", headers={"Retry-After": "2"})
+        if needs_slot:
+            service.note_chat(True)
         url = f"http://127.0.0.1:{service.engine_port}/v1/{path}"
         body = await request.body()
         headers = {
@@ -393,8 +398,24 @@ def create_coordinator_app(
             )
         except httpx.HTTPError as exc:
             await client.aclose()
-            service.note_chat(False)
+            if needs_slot:
+                service.note_chat(False)
+                queue.release()
             raise HTTPException(status_code=502, detail=f"llama-server недоступен: {exc}") from exc
+
+        async def chunks() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in upstream.aiter_raw():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+                if needs_slot:
+                    service.note_chat(False)
+                    queue.release()
+
+        media = upstream.headers.get("content-type")
+        return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=media)
 
     @app.post("/api/bench")
     def start_bench() -> dict:
@@ -411,17 +432,9 @@ def create_coordinator_app(
     def cancel_bench() -> dict:
         return service.cancel_bench()
 
-        async def chunks() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in upstream.aiter_raw():
-                    yield chunk
-            finally:
-                await upstream.aclose()
-                await client.aclose()
-                service.note_chat(False)
-
-        media = upstream.headers.get("content-type")
-        return StreamingResponse(chunks(), status_code=upstream.status_code, media_type=media)
+    @app.get("/api/integration")
+    def integration() -> dict:
+        return service.integration_view()
 
     return app
 

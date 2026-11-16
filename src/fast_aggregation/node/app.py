@@ -32,6 +32,17 @@ class PairJoinBody(BaseModel):
     code: str = Field(min_length=6, max_length=8)
 
 
+class AuxStartBody(BaseModel):
+    role: str = Field(min_length=1)
+    model_path: str = Field(min_length=1)
+    port: int
+    extra_args: list[str] = Field(default_factory=list)
+
+
+class AuxStopBody(BaseModel):
+    role: str = Field(min_length=1)
+
+
 _PAIR_PAGE = """<!DOCTYPE html>
 <html lang="ru"><head><meta charset="utf-8"><title>fastagg узел</title>
 <style>
@@ -212,6 +223,24 @@ def create_node_app(
             return service.start_rpc(body.release, body.backend, body.cache)
         except FastAggError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/aux/start")
+    def aux_start(body: AuxStartBody, request: Request) -> dict:
+        guard(request)
+        try:
+            return service.start_aux(body.role, body.model_path, body.port, body.extra_args)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/aux/stop")
+    def aux_stop(body: AuxStopBody, request: Request) -> dict:
+        guard(request)
+        return service.stop_aux(body.role)
+
+    @app.get("/v1/aux")
+    def aux_state(request: Request) -> dict:
+        guard(request)
+        return service.aux_status()
 
     @app.post("/v1/rpc/stop")
     def stop_rpc(request: Request) -> dict:

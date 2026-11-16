@@ -34,6 +34,9 @@ class HttpNodeClient:
     def stop_rpc(self, host: str, port: int) -> dict:
         return self._request("POST", self._url(host, port, "/v1/rpc/stop"), timeout=60)
 
+    def start_aux(self, host: str, port: int, payload: dict) -> dict:
+        return self._request("POST", self._url(host, port, "/v1/aux/start"), json=payload, timeout=60)
+
     def measure(self, host: str, port: int) -> dict[str, float]:
         started = time.perf_counter()
         httpx.get(self._url(host, port, "/health"), timeout=3, verify=self.verify)
