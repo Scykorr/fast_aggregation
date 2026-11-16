@@ -230,31 +230,43 @@ def _serve_node(args: argparse.Namespace) -> int:
     data = _data_dir(args)
     membership = load_membership(data)
     token = str(membership.get("token") or "") if membership else ""
-    if not token and not args.open:
-        print(
-            "Узел ещё не сопряжён. На координаторе возьмите код и выполните fastagg join. "
-            "Для лаборатории без токена: --open.",
-            file=sys.stderr,
-        )
-        return 2
     service = _build_node(args, http_port=args.http_port)
     service.settings.allow_download = bool(args.allow_download)
     mirror = args.runtime_from.strip()
     if not mirror and membership:
         mirror = str(membership.get("runtime_mirror") or "")
     service.settings.runtime_mirror = mirror or None
+    from fast_aggregation.node.pairing import PairSession, hardware_summary
+
+    session = PairSession(data, joiner=_node_joiner(data, service))
+    session.auth["token"] = token
+    announce = service.announce()
+    announce.paired = bool(token)
+    announce.summary = hardware_summary(service.resources)
+    announce.role = "node"
+    session.announce = announce
+
+    def _remember(found, _addr) -> None:
+        session.note_coordinator(found)
+
     discovery = DiscoveryService(
-        service.announce(),
+        announce,
         port=args.discovery_port,
-        on_announce=lambda _announce, _addr: None,
+        on_announce=_remember,
         token=token or None,
     )
-    app = create_node_app(service, discovery, token=token or None)
+    app = create_node_app(service, discovery, token=token or None, session=session)
     scheme = "http" if args.open or args.insecure_http else "https"
     ssl_kwargs = _ssl_kwargs(data, args.advertise or guess_advertise_host()) if scheme == "https" else {}
-    _print_banner(
-        f"Узел {service.settings.name} слушает {scheme}://{args.bind}:{args.http_port}, RPC-порт {args.rpc_port}"
-    )
+    if token:
+        line = f"Узел {service.settings.name} сопряжён и слушает {scheme}://{args.bind}:{args.http_port}"
+    else:
+        line = (
+            f"Узел {service.settings.name} слушает {scheme}://{args.bind}:{args.http_port}, RPC-порт {args.rpc_port}. "
+            "Сопряжения ещё нет: координатор может нажать «Сопрячь», либо откройте на этом компьютере страницу узла "
+            f"и введите код. Объявление в сети уже идёт."
+        )
+    _print_banner(line)
     uvicorn.run(app, host=args.bind, port=args.http_port, log_level="info", **ssl_kwargs)
     return 0
 
@@ -418,6 +430,23 @@ def _run_coordinator(
         port=args.discovery_port,
         on_announce=lambda announce, _addr: registry.upsert_announce(announce),
         token=token or None,
+    )
+    from fast_aggregation.models import Announce
+
+    discovery.beacons.append(
+        Announce(
+            node_id="coordinator",
+            name=args.name or "coordinator",
+            advertise_host=advertise,
+            http_port=choice.port,
+            rpc_port=args.rpc_port,
+            os_name="",
+            arch="",
+            role="coordinator",
+            paired=True,
+            summary="координатор",
+            fingerprint=fingerprint,
+        )
     )
     app = create_coordinator_app(service, discovery)
     lines = []
@@ -682,17 +711,24 @@ def _tray(args: argparse.Namespace) -> int:
                 logs_dir=str(logs.parent),
                 on_restart=restart,
                 on_quit=quit_primary,
+                on_copy=lambda: _copy_pairing_links(data),
             )
             lock.release()
             return 0
     else:
         start_server()
+    node_page = None
+    if args.role == "node":
+        scheme = "http" if args.open or args.insecure_http else "https"
+        node_page = f"{scheme}://127.0.0.1:{child.http_port}/pair"
     run_tray(
-        url_getter=current_url if args.role == "coordinator" else None,
+        url_getter=(lambda: node_page) if node_page else (current_url if args.role == "coordinator" else None),
         status=status,
         logs_dir=str(log_dir()),
         on_restart=None,
         on_quit=stop_server if args.role == "node" else None,
+        open_label="Подключиться к координатору" if args.role == "node" else "Открыть дашборд",
+        on_copy=(lambda: _copy_pairing_links(data)) if args.role == "coordinator" else None,
     )
     return 0
 
@@ -840,6 +876,84 @@ def _data_dir(args: argparse.Namespace):
     if getattr(args, "data_dir", ""):
         return Path(args.data_dir)
     return home_dir()
+
+
+def _copy_pairing_links(data: Path) -> None:
+    from fast_aggregation.netinfo import local_ipv4_addresses
+    from fast_aggregation.security.certs import fingerprint_pem
+    from fast_aggregation.security.token import join_uri
+
+    code_path = data / "pairing_code"
+    cert_path = data / "tls" / "cert.pem"
+    if not code_path.is_file() or not cert_path.is_file():
+        return
+    from fast_aggregation.instance import read_state
+
+    code = code_path.read_text(encoding="utf-8").strip()
+    fingerprint = fingerprint_pem(cert_path.read_bytes())
+    port = int(read_state(data).get("port") or COORDINATOR_PORT)
+    hosts = [ip for ip in local_ipv4_addresses() if not ip.startswith("127.")] or ["127.0.0.1"]
+    _copy_text("\n".join(join_uri(host, port, code, fingerprint) for host in hosts))
+
+
+def _copy_text(text: str) -> None:
+    if sys.platform == "win32":
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        if not user32.OpenClipboard(0):
+            return
+        try:
+            user32.EmptyClipboard()
+            raw = text.encode("utf-16-le") + b"\0\0"
+            handle = kernel32.GlobalAlloc(0x0002, len(raw))
+            locked = kernel32.GlobalLock(handle)
+            ctypes.memmove(locked, raw, len(raw))
+            kernel32.GlobalUnlock(handle)
+            user32.SetClipboardData(13, handle)
+        finally:
+            user32.CloseClipboard()
+        return
+    try:
+        subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode(), check=False)
+    except OSError:
+        return
+
+
+def _node_joiner(data: Path, service):
+    def join(pending: dict) -> dict:
+        from fast_aggregation.security.certs import local_names
+        from fast_aggregation.security.pin import pinned_post
+
+        origin = str(pending["coordinator"]).rstrip("/")
+        cert_path, _key, _fp = ensure_cert(data / "tls", local_names(service.settings.advertise_host))
+        result = pinned_post(
+            origin + "/api/pair",
+            pending["fingerprint"],
+            {
+                "code": pending["code"],
+                "node_id": service.settings.node_id,
+                "name": service.settings.name,
+                "advertise_host": service.settings.advertise_host,
+                "http_port": service.settings.http_port,
+                "rpc_port": service.settings.rpc_port,
+                "cert_pem": cert_path.read_text(encoding="utf-8"),
+            },
+            data / "coordinator.pem",
+        )
+        save_membership(
+            data,
+            {
+                "token": result["token"],
+                "coordinator": origin + "/api/pair",
+                "fingerprint": pending["fingerprint"],
+                "runtime_mirror": origin + "/runtime",
+            },
+        )
+        return result
+
+    return join
 
 
 def _print_banner(text: str) -> None:

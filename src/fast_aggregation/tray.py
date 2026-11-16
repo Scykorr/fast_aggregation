@@ -21,6 +21,8 @@ def run_tray(
     logs_dir: str | None = None,
     on_restart: Callable[[], None] | None = None,
     on_quit: Callable[[], None] | None = None,
+    on_copy: Callable[[], None] | None = None,
+    open_label: str = "Открыть дашборд",
 ) -> None:
     try:
         import pystray
@@ -75,9 +77,15 @@ def run_tray(
                 icon.title = title["text"]
             threading.Event().wait(3)
 
+    def copy_link(_icon: object, _item: object) -> None:
+        if on_copy is not None:
+            on_copy()
+
     menu_items = []
     if url_getter is not None:
-        menu_items.append(pystray.MenuItem("Открыть дашборд", open_dashboard, default=True))
+        menu_items.append(pystray.MenuItem(open_label, open_dashboard, default=True))
+    if on_copy is not None:
+        menu_items.append(pystray.MenuItem("Скопировать ссылку сопряжения", copy_link))
     if logs_dir:
         menu_items.append(pystray.MenuItem("Показать журналы", show_logs))
     if on_restart is not None:

@@ -77,6 +77,11 @@ class HfPullBody(BaseModel):
     files: list[dict]
 
 
+class OfferBody(BaseModel):
+    host: str = Field(min_length=1)
+    port: int = 47000
+
+
 class PlanQuery(BaseModel):
     allow_cpu: bool = False
     reserve_mb: int = DEFAULT_VRAM_RESERVE_MB
@@ -145,7 +150,7 @@ def create_coordinator_app(
         return {"token": service.token, "fingerprint": service.fingerprint}
 
     @app.get("/api/pair/qr.svg")
-    def pair_qr(request: Request) -> Response:
+    def pair_qr(request: Request, host: str = "") -> Response:
         host = request.client.host if request.client else ""
         if host not in {"127.0.0.1", "::1"}:
             raise HTTPException(status_code=403, detail="QR сопряжения доступен только с этого компьютера")
@@ -156,9 +161,20 @@ def create_coordinator_app(
 
         from fast_aggregation.security.token import join_uri
 
-        uri = join_uri(service.public_host, service.public_port, view["code"], view["fingerprint"])
+        links = view.get("links") or []
+        chosen = host if any(item.get("host") == host for item in links) else ""
+        if not chosen:
+            chosen = links[0]["host"] if links else service.public_host
+        uri = join_uri(chosen, service.public_port, view["code"], view["fingerprint"])
         svg = segno.make(uri).svg_inline(scale=4)
         return Response(content=svg, media_type="image/svg+xml")
+
+    @app.post("/api/pair/rotate")
+    def rotate_pair(request: Request) -> dict:
+        host = request.client.host if request.client else ""
+        if host not in {"127.0.0.1", "::1"}:
+            raise HTTPException(status_code=403, detail="Новый код можно выпустить только на этом компьютере")
+        return service.rotate_pairing_code() or {}
 
     @app.get("/api/capacity")
     def capacity(ctx: int = 4096, allow_cpu: bool = False, reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> dict:
@@ -258,10 +274,20 @@ def create_coordinator_app(
     @app.post("/api/scan")
     def scan(body: ScanBody) -> dict:
         try:
-            found = service.discover_subnet(body.cidr, body.port)
+            return service.begin_scan(body.cidr, body.port)
         except FastAggError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"found": found}
+
+    @app.get("/api/scan")
+    def scan_state() -> dict:
+        return service.scan_view()
+
+    @app.post("/api/nodes/offer")
+    def offer_node(body: OfferBody) -> dict:
+        try:
+            return service.push_offer(body.host, body.port)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/plan")
     def plan(body: PlanQuery) -> dict:

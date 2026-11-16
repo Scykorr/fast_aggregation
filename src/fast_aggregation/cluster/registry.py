@@ -31,6 +31,8 @@ class TrackedNode:
     rtt_ms: float | None = None
     bandwidth_mbps: float | None = None
     limits: NodeLimits | None = None
+    paired: bool = True
+    summary: str = ""
 
     def online(self, now: float, ttl: float) -> bool:
         return (now - self.last_seen) <= ttl
@@ -75,6 +77,8 @@ class TrackedNode:
             "rtt_ms": self.rtt_ms,
             "bandwidth_mbps": self.bandwidth_mbps,
             "limits": self.limits.to_dict() if self.limits else None,
+            "paired": self.paired,
+            "summary": self.summary,
         }
 
 
@@ -126,6 +130,8 @@ class NodeRegistry:
         rtt_ms: float | None = None,
         bandwidth_mbps: float | None = None,
         limits: NodeLimits | None = None,
+        paired: bool | None = None,
+        summary: str | None = None,
         seen: bool = True,
         now: float | None = None,
     ) -> TrackedNode:
@@ -171,6 +177,10 @@ class NodeRegistry:
                 current.bandwidth_mbps = bandwidth_mbps
             if limits is not None:
                 current.limits = limits
+            if paired is not None:
+                current.paired = paired
+            if summary is not None:
+                current.summary = summary
             if seen:
                 current.last_seen = moment
             return current

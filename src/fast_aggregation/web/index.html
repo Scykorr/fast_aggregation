@@ -58,6 +58,7 @@
     .bubble.user { background: #243024; }
     .bubble.assistant { background: #121812; border: 1px solid var(--line); }
     pre { white-space: pre-wrap; background: #0e130d; border-radius: 8px; padding: 10px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+    .pair code, .pair input { font-family: ui-monospace, Consolas, monospace; }
     .bar { height: 10px; background: #0e130d; border-radius: 6px; overflow: hidden; margin: 8px 0; }
     .bar span { display: block; height: 100%; width: 0; background: var(--accent); }
     #hf-choices { display: grid; gap: 8px; margin-top: 10px; }
@@ -80,6 +81,10 @@
   </nav>
   <main>
     <div id="overview" class="panel on">
+      <section class="pair">
+        <h2>Подключить узел</h2>
+        <div class="pair-body"><p class="muted">Код и ссылка появятся здесь.</p></div>
+      </section>
       <section>
         <h2>Ёмкость кластера</h2>
         <div id="cards" class="cards"></div>
@@ -103,10 +108,15 @@
           <label>Подключить по адресу<input id="address" type="text" placeholder="192.168.1.20:47000" /></label>
           <button type="submit">Подключить</button>
         </form>
+        <section class="pair">
+          <h2>Подключить узел</h2>
+          <div class="pair-body"><p class="muted">Код и ссылка появятся здесь.</p></div>
+        </section>
         <form id="scan-form">
-          <label>Скан подсети<input id="cidr" type="text" placeholder="192.168.1.0/24" /></label>
+          <label>Скан подсети<input id="cidr" type="text" placeholder="10.32.237.0/24" /></label>
           <button type="submit" class="ghost">Сканировать</button>
         </form>
+        <div id="scan-box" class="muted"></div>
         <div id="node-msg" class="bad"></div>
       </section>
     </div>
@@ -208,6 +218,7 @@
           ["Медленный канал", capacity.slowest_mbps == null ? "н/д" : capacity.slowest_mbps + " Мбит/с"]
         ].map((item) => `<div class="card"><span class="muted">${esc(item[0])}</span><b>${esc(item[1])}</b></div>`).join("");
         $("#notes").textContent = (capacity.notes || []).join(" ");
+      renderPair();
         const rows = (capacity.recommendations || []).map((row) => `<tr>
           <td>${esc(row.label)}</td>
           <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
@@ -242,7 +253,7 @@
           <td>${gpus}</td>
           <td>${res.temperature_c != null ? Math.round(res.temperature_c) + " °C" : "н/д"}<div class="muted">${res.battery_percent != null ? "батарея " + Math.round(res.battery_percent) + "%" : esc(res.device_class || "")}</div></td>
           <td>${node.bandwidth_mbps != null ? node.bandwidth_mbps + " Мбит/с" : "н/д"}<div class="muted">${node.rtt_ms != null ? node.rtt_ms + " мс" : ""}</div></td>
-          <td>${limits.excluded ? "исключён" : "в расчёте"}</td>
+          <td>${limits.excluded ? "исключён" : "в расчёте"}${node.paired === false ? "<div class='warn'>не сопряжён</div>" : ""}<div class="muted">${esc(node.summary || "")}</div></td>
           <td>
             <button class="ghost" data-exclude="${esc(node.node_id)}" data-value="${limits.excluded ? "0" : "1"}">${limits.excluded ? "Вернуть" : "Исключить"}</button>
             <form data-limits="${esc(node.node_id)}">
@@ -252,6 +263,7 @@
               <input name="memory_cap_mb" type="number" placeholder="потолок МиБ" value="${limits.memory_cap_mb ?? ""}" />
               <button type="submit" class="ghost">Лимиты</button>
             </form>
+            ${node.paired === false ? `<button class="ghost" data-offer="${esc(node.host)}" data-port="${node.http_port}">Сопрячь</button>` : ""}
             ${node.source === "manual" ? `<button class="ghost" data-remove="${esc(node.node_id)}">Отключить</button>` : ""}
           </td>
         </tr>`;
@@ -272,6 +284,45 @@
           <td class="${item.fits ? "ok" : "bad"}">${item.fits ? "влезет" : esc(item.error || "не влезет")}</td>
           <td><button class="ghost" data-start="${esc(item.path)}">Развернуть</button></td>
         </tr>`).join("") + "</tbody></table>";
+    }
+
+    function renderPair() {
+      const pair = state.pairing;
+      const html = !pair ? "<p class='muted'>Ссылка сопряжения показывается на компьютере координатора.</p>"
+        : pairHtml(pair);
+      document.querySelectorAll(".pair-body").forEach((node) => { node.innerHTML = html; });
+      document.querySelectorAll("[data-copy]").forEach((button) => {
+        button.onclick = async () => {
+          const text = button.getAttribute("data-copy") || "";
+          try { await navigator.clipboard.writeText(text); button.textContent = "Скопировано"; }
+          catch (error) {
+            const box = button.parentElement && button.parentElement.querySelector("input");
+            if (box) { box.focus(); box.select(); }
+          }
+        };
+      });
+      const rotate = document.querySelector("#new-code");
+      if (rotate) rotate.onclick = async () => {
+        await fetch("/api/pair/rotate", {method: "POST"});
+        refresh();
+      };
+    }
+    function pairHtml(pair) {
+      const links = pair.links || [];
+      const first = links[0];
+      const rows = links.map((item) => `<div>
+        <div class="muted">${esc(item.host)}</div>
+        <input readonly value="${esc(item.uri)}" />
+        <button type="button" class="ghost" data-copy="${esc(item.uri)}">Копировать ссылку</button>
+        <input readonly value="${esc(item.command)}" />
+        <button type="button" class="ghost" data-copy="${esc(item.command)}">Копировать команду</button>
+      </div>`).join("") || "<p class='warn'>Нет адреса локальной сети, только петля. Подключите адаптер LAN.</p>";
+      const qr = first ? `<img alt="QR" src="/api/pair/qr.svg?host=${encodeURIComponent(first.host)}" width="180" height="180" />` : "";
+      return `<p>Код: <b>${esc(pair.code)}</b></p>
+        <p class="muted">Отпечаток: ${esc(pair.fingerprint || "")}</p>
+        ${qr}
+        ${rows}
+        <button type="button" id="new-code" class="ghost">Новый код</button>`;
     }
 
     function renderChats() {
@@ -361,14 +412,51 @@
     });
     $("#scan-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      $("#node-msg").textContent = "";
       const response = await fetch("/api/scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cidr: $("#cidr").value})});
+      const started = await response.json();
+      if (!response.ok) {
+        $("#node-msg").textContent = started.detail || "Скан не удался";
+        return;
+      }
+      const timer = setInterval(async () => {
+        const stateResponse = await fetch("/api/scan");
+        const job = await stateResponse.json();
+        const found = job.found || [];
+        const list = found.map((item) => `<div>${esc(item.name)} · ${esc(item.host)} · ${esc(item.summary || "")}
+          ${item.paired ? "" : `<button type="button" class="ghost" data-offer="${esc(item.host)}" data-port="${item.port}">Сопрячь</button>`}
+        </div>`).join("");
+        $("#scan-box").innerHTML = `Проверено ${job.probed || 0} из ${job.total || 0}. ${esc(job.reason || job.status || "")}` + list;
+        if (job.status === "done" || job.status === "error") {
+          clearInterval(timer);
+          refresh();
+        }
+      }, 500);
+    });
+    $("#scan-box").addEventListener("click", async (event) => {
+      const offer = event.target.dataset && event.target.dataset.offer;
+      if (!offer) return;
+      const response = await fetch("/api/nodes/offer", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({host: offer, port: Number(event.target.dataset.port) || 47000})
+      });
       const data = await response.json();
-      $("#node-msg").textContent = response.ok ? "Найдено: " + (data.found || []).join(", ") : (data.detail || "Скан не удался");
-      refresh();
+      $("#node-msg").textContent = response.ok ? ("Сопряжение: " + (data.status || "отправлено")) : (data.detail || "Не отправлено");
     });
     $("#node-table").addEventListener("click", async (event) => {
       const remove = event.target.dataset && event.target.dataset.remove;
       const exclude = event.target.dataset && event.target.dataset.exclude;
+      const offer = event.target.dataset && event.target.dataset.offer;
+      if (offer) {
+        const response = await fetch("/api/nodes/offer", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({host: offer, port: Number(event.target.dataset.port) || 47000})
+        });
+        const data = await response.json();
+        $("#node-msg").textContent = response.ok ? ("Сопряжение: " + (data.status || "отправлено")) : (data.detail || "Не отправлено");
+      }
       if (remove) {
         await fetch("/api/nodes/" + encodeURIComponent(remove), {method: "DELETE"});
         refresh();

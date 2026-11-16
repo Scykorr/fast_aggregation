@@ -55,11 +55,12 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "fastagg"; ValueData: """{app}\{#MyAppExe}"" tray --role node"; Tasks: rolenode; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-discovery"" dir=in action=allow protocol=UDP localport=45221 profile=private"; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-node"" dir=in action=allow protocol=TCP localport=47000 profile=private"; Flags: runhidden
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""fastagg-rpc"" dir=in action=allow protocol=TCP localport=50052 profile=private"; Flags: runhidden
-Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=fastagg-dashboard & netsh advfirewall firewall add rule name=fastagg-dashboard dir=in action=allow protocol=TCP localport=47080-47099 profile=private"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=fastagg-discovery & netsh advfirewall firewall add rule name=fastagg-discovery dir=in action=allow protocol=UDP localport=45221 profile=any"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=fastagg-node & netsh advfirewall firewall add rule name=fastagg-node dir=in action=allow protocol=TCP localport=47000 profile=any"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=fastagg-rpc & netsh advfirewall firewall add rule name=fastagg-rpc dir=in action=allow protocol=TCP localport=50052 profile=any"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=fastagg-dashboard & netsh advfirewall firewall add rule name=fastagg-dashboard dir=in action=allow protocol=TCP localport=47080-47099 profile=any"; Flags: runhidden
 Filename: "{app}\{#MyAppExe}"; Description: "Открыть координатор"; Parameters: "coordinator"; Flags: nowait postinstall skipifsilent; Tasks: rolecoord
+Filename: "{app}\{#MyAppExe}"; Description: "Открыть узел"; Parameters: "node"; Flags: nowait postinstall skipifsilent; Tasks: rolenode
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""fastagg-discovery"""; Flags: runhidden

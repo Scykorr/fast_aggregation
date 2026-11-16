@@ -156,6 +156,10 @@ class Announce:
     arch: str
     preferred_backend: str = "auto"
     software: str = "fast-aggregation"
+    paired: bool = True
+    summary: str = ""
+    role: str = "node"
+    fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

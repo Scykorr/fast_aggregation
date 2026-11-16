@@ -38,7 +38,7 @@ foreach ($Rule in $Rules) {
     if ($existing) {
         Remove-NetFirewallRule -DisplayName $Rule.Name
     }
-    New-NetFirewallRule -DisplayName $Rule.Name -Direction Inbound -Protocol $Rule.Protocol -LocalPort $Rule.Port -Action Allow -Profile Private | Out-Null
+        New-NetFirewallRule -DisplayName $Rule.Name -Direction Inbound -Protocol $Rule.Protocol -LocalPort $Rule.Port -Action Allow -Profile Any | Out-Null
     Write-Host "Правило брандмауэра: $($Rule.Name) порт $($Rule.Port)"
 }
 

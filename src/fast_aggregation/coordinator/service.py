@@ -132,6 +132,8 @@ class CoordinatorService:
             rpc_backend=rpc.get("backend"),
             rpc_error=rpc.get("error") or "",
             manual=manual,
+            paired=bool(payload["paired"]) if "paired" in payload else None,
+            summary=str(payload.get("summary") or "") or None,
         )
 
     def add_manual(self, address: str) -> dict:
@@ -180,21 +182,140 @@ class CoordinatorService:
         return False
 
     def discover_subnet(self, cidr: str, port: int = NODE_HTTP_PORT) -> list[str]:
-        opened = scan_tcp(hosts_in_cidr(cidr), port)
-        found: list[str] = []
-        for host in opened:
+        job = self.begin_scan(cidr, port)
+        return [item["host"] for item in job.get("found") or []]
+
+    def begin_scan(self, cidr: str, port: int = NODE_HTTP_PORT) -> dict:
+        import logging
+
+        from fast_aggregation.discovery.scan import explain_scan, scan_hosts
+
+        current = getattr(self, "_scan_job", None)
+        if current and current.get("status") == "running":
+            return current
+        hosts = hosts_in_cidr(cidr)
+        job: dict = {
+            "status": "running",
+            "probed": 0,
+            "total": len(hosts),
+            "found": [],
+            "reason": "",
+            "log": [],
+            "port": port,
+        }
+        self._scan_job = job
+        log = logging.getLogger("fast_aggregation.scan")
+
+        def progress(done: int, _total: int, result) -> None:
+            job["probed"] = done
+            line = f"{result.host}: {result.state}"
+            if result.detail:
+                line += " — " + result.detail
+            job["log"] = (job["log"] + [line])[-40:]
+            log.info(line)
+            if result.state == "hello" and result.hello:
+                self._ingest_hello(result.host, port, result.hello)
+                job["found"].append(
+                    {
+                        "host": result.host,
+                        "port": port,
+                        "name": result.hello.get("name") or result.host,
+                        "summary": result.hello.get("summary") or "",
+                        "paired": bool(result.hello.get("paired")),
+                        "node_id": result.hello.get("node_id") or "",
+                    }
+                )
+
+        def work() -> None:
             try:
-                payload = self.client.fetch(host, port)
+                results = scan_hosts(hosts, port, on_progress=progress)
+                job["reason"] = explain_scan(results)
+                job["status"] = "done"
+                log.info(job["reason"])
             except FastAggError as exc:
-                found.append(f"{host}: порт открыт, снимок не прочитан ({exc})")
-                continue
-            if not payload.get("node_id"):
-                continue
-            payload["advertise_host"] = host
-            payload["http_port"] = port
+                job["status"] = "error"
+                job["reason"] = str(exc)
+                log.info("scan error: %s", exc)
+
+        threading.Thread(target=work, name="fa-scan", daemon=True).start()
+        return job
+
+    def scan_view(self) -> dict:
+        job = getattr(self, "_scan_job", None)
+        if not job:
+            return {"status": "idle", "probed": 0, "total": 0, "found": [], "reason": "", "log": []}
+        return job
+
+    def _ingest_hello(self, host: str, port: int, hello: dict) -> None:
+        payload = dict(hello)
+        payload["advertise_host"] = host
+        payload["http_port"] = port
+        try:
             self.apply_payload(payload, manual=True)
-            found.append(host)
-        return found
+        except FastAggError:
+            return
+
+    def push_offer(self, host: str, port: int) -> dict:
+        if not self.pairing_code or not self.fingerprint:
+            raise FastAggError("На этом координаторе нет кода сопряжения")
+        scheme = "https"
+        payload = {
+            "coordinator": f"{scheme}://{self.public_host}:{self.public_port}",
+            "code": self.pairing_code,
+            "fingerprint": self.fingerprint,
+        }
+        errors: list[str] = []
+        for candidate in ("https", "http"):
+            try:
+                response = httpx.post(
+                    f"{candidate}://{host}:{port}/v1/pair/offer",
+                    json=payload,
+                    timeout=3,
+                    verify=False,
+                )
+            except httpx.HTTPError as exc:
+                errors.append(str(exc))
+                continue
+            if response.status_code >= 400:
+                errors.append(response.text.strip() or str(response.status_code))
+                continue
+            try:
+                body = response.json()
+            except ValueError:
+                body = {"status": "sent"}
+            body["host"] = host
+            return body
+        raise FastAggError("Узел не принял предложение. " + "; ".join(errors))
+
+    def pairing_card(self) -> dict | None:
+        if not self.pairing_code:
+            return None
+        from fast_aggregation.netinfo import local_ipv4_addresses
+        from fast_aggregation.security.token import join_uri
+
+        hosts = [ip for ip in local_ipv4_addresses() if not ip.startswith("127.")]
+        if not hosts and self.public_host and not str(self.public_host).startswith("127."):
+            hosts = [self.public_host]
+        links = []
+        for host in hosts:
+            uri = join_uri(host, self.public_port, self.pairing_code, self.fingerprint)
+            links.append({"host": host, "uri": uri, "command": f'fastagg join --url "{uri}"'})
+        return {
+            "code": self.pairing_code,
+            "fingerprint": self.fingerprint,
+            "port": self.public_port,
+            "links": links,
+        }
+
+    def rotate_pairing_code(self) -> dict:
+        from fast_aggregation.security.token import new_code
+
+        code = new_code()
+        path = self.data_dir / "pairing_code"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(code, encoding="utf-8")
+        self.pairing_code = code
+        return self.pairing_card() or {}
 
     def command_preview(
         self,
@@ -471,10 +592,8 @@ class CoordinatorService:
                 if limits:
                     self.registry.upsert_details(str(node_id), limits=limits, seen=False)
 
-    def _pairing_view(self) -> dict[str, str] | None:
-        if not self.pairing_code:
-            return None
-        return {"code": self.pairing_code, "fingerprint": self.fingerprint}
+    def _pairing_view(self) -> dict | None:
+        return self.pairing_card()
 
     def _start_workers(self, plan: PlacementPlan) -> None:
         launched: set[str] = set()

@@ -36,6 +36,7 @@ class DiscoveryService:
         token: str | None = None,
     ) -> None:
         self.announce = announce
+        self.beacons = [announce] if announce is not None else []
         self.port = port
         self.bind_host = bind_host
         self.interval = interval
@@ -65,18 +66,19 @@ class DiscoveryService:
         self._threads.clear()
 
     def send_once(self) -> None:
-        if self.announce is None:
+        packets = [encode_announce(item, self.token) for item in self.beacons if item is not None]
+        if not packets:
             return
-        packet = encode_announce(self.announce, self.token)
         targets = self._targets()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            for host, port in targets:
-                try:
-                    sock.sendto(packet, (host, port))
-                except OSError as exc:
-                    log.debug("discovery send to %s:%s failed: %s", host, port, exc)
+            for packet in packets:
+                for host, port in targets:
+                    try:
+                        sock.sendto(packet, (host, port))
+                    except OSError as exc:
+                        log.debug("discovery send to %s:%s failed: %s", host, port, exc)
         finally:
             sock.close()
 
