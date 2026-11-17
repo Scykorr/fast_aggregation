@@ -34,6 +34,7 @@ def test_version_sources_agree():
     assert f'#define SetupBaseName "fastagg-setup-cuda-{__version__}"' in cuda
     gradle = (ROOT / "android" / "app" / "build.gradle.kts").read_text(encoding="utf-8")
     assert "src/fast_aggregation/__init__.py" in gradle
+    assert "buildConfig = true" in gradle
     assert "100_000_000" in gradle and "1_000_000" in gradle and "10_000" in gradle
     assert 'versionName = "0.1.0"' not in gradle
     kotlin = (ROOT / "android/app/src/main/java/io/fastagg/node/NodeService.kt").read_text(encoding="utf-8")

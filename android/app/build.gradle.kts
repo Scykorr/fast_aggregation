@@ -22,6 +22,9 @@ val fastaggVersionName = if (fastaggBuild > 0) "$fastaggVersion+$fastaggBuild" e
 android {
     namespace = "io.fastagg.node"
     compileSdk = 34
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "io.fastagg.node"
