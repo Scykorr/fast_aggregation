@@ -61,6 +61,7 @@
     .pair code, .pair input { font-family: ui-monospace, Consolas, monospace; }
     .bar { height: 10px; background: #0e130d; border-radius: 6px; overflow: hidden; margin: 8px 0; }
     .bar span { display: block; height: 100%; width: 0; background: var(--accent); }
+    footer { padding: 8px 20px 20px; }
     #hf-choices { display: grid; gap: 8px; margin-top: 10px; }
     @media (max-width: 800px) { .chat-layout { grid-template-columns: 1fr; } }
   </style>
@@ -68,7 +69,7 @@
 <body>
   <header>
     <div>
-      <h1>fastagg</h1>
+      <h1>fastagg <span id="header-version" class="muted"></span></h1>
       <div class="muted">Локальный кластер. Интерфейс не ходит в интернет.</div>
     </div>
     <div>Состояние: <span id="phase" class="phase">…</span><div id="pair" class="muted"></div></div>
@@ -80,6 +81,7 @@
     <button type="button" data-tab="chat">Чат</button>
     <button type="button" data-tab="api">Интеграции</button>
   </nav>
+  <p id="version-warn" class="warn" hidden></p>
   <main>
     <div id="overview" class="panel on">
       <section class="pair">
@@ -210,6 +212,13 @@
     });
 
     function render() {
+      const shown = state.fastagg_version || state.version || "";
+      $("#header-version").textContent = shown;
+      $("#app-version").textContent = shown ? "fastagg " + shown : "";
+      const mismatches = (state.nodes || []).filter((node) => node.version_mismatch);
+      const warn = $("#version-warn");
+      warn.hidden = mismatches.length === 0;
+      warn.textContent = mismatches.map((node) => (node.name || node.node_id) + ": " + (node.version_detail || "другая версия")).join(" · ");
       const phase = $("#phase");
       phase.textContent = state.phase + (state.error ? " — " + state.error : "");
       phase.className = "phase " + (state.phase || "");
@@ -254,7 +263,7 @@
         const limits = node.limits || {};
         const gpus = (res.gpus || []).map((gpu) => `${esc(gpu.name)} ${mb(gpu.vram_free_mb)}/${mb(gpu.vram_total_mb)} ${gpu.temperature_c != null ? Math.round(gpu.temperature_c) + "°C" : ""}`).join("<br>") || "нет";
         return `<tr>
-          <td><span class="dot ${node.online ? "on" : ""}"></span>${esc(node.name)}<div class="muted">${esc(node.host)}:${node.http_port}</div></td>
+          <td><span class="dot ${node.online ? "on" : ""}"></span>${esc(node.name)}<div class="muted">${esc(node.host)}:${node.http_port}</div>${node.version && !node.version_mismatch ? `<div class="muted">${esc(node.version)}</div>` : ""}${node.version_mismatch ? `<div class="warn">${esc(node.version_detail || "другая версия")}</div>` : ""}</td>
           <td>${esc(res.cpu_model || "—")}<div class="muted">${res.cpu_percent != null ? Math.round(res.cpu_percent) + "% · " : ""}${mb(res.ram_available_mb)} своб.</div></td>
           <td>${gpus}</td>
           <td>${res.temperature_c != null ? Math.round(res.temperature_c) + " °C" : "н/д"}<div class="muted">${res.battery_percent != null ? "батарея " + Math.round(res.battery_percent) + "%" : esc(res.device_class || "")}</div></td>
@@ -693,5 +702,6 @@
       if (job.status === "running" || job.status === "paused") watchPull();
     }).catch(() => {});
   </script>
+  <footer id="app-version" class="muted"></footer>
 </body>
 </html>

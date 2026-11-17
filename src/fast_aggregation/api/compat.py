@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from fast_aggregation.api.queue import GenerationQueue
 from fast_aggregation.cluster.roles import SUGGESTED_ROLES
+from fast_aggregation.version import full_version, product_version
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 RETRY_AFTER_SEC = "2"
@@ -101,11 +102,13 @@ def create_compat_app(
     def health() -> dict:
         body = bridge.health()
         body["queue"] = gate.snapshot()
+        body["version"] = product_version()
+        body["fastagg_version"] = full_version()
         return body
 
     @app.get("/api/version")
     def version() -> dict:
-        return {"version": "fastagg-0.1.0"}
+        return {"version": product_version(), "fastagg_version": full_version()}
 
     @app.get("/api/tags")
     def tags() -> dict:

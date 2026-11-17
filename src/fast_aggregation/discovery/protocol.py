@@ -57,6 +57,7 @@ def decode_announce(packet: bytes, token: str | None = None) -> Announce | None:
         arch=str(data.get("arch") or ""),
         preferred_backend=str(data.get("preferred_backend") or "auto"),
         software=str(data.get("software") or ""),
+        version=str(data.get("version") or ""),
         paired=bool(data.get("paired", True)),
         summary=str(data.get("summary") or ""),
         role=str(data.get("role") or "node"),

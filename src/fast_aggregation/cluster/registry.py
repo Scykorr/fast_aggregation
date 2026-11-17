@@ -33,6 +33,7 @@ class TrackedNode:
     limits: NodeLimits | None = None
     paired: bool = True
     summary: str = ""
+    version: str = ""
 
     def online(self, now: float, ttl: float) -> bool:
         return (now - self.last_seen) <= ttl
@@ -54,6 +55,9 @@ class TrackedNode:
         )
 
     def to_public(self, now: float, ttl: float) -> dict:
+        from fast_aggregation.version import version_status
+
+        status = version_status(self.version)
         return {
             "node_id": self.node_id,
             "name": self.name,
@@ -79,6 +83,9 @@ class TrackedNode:
             "limits": self.limits.to_dict() if self.limits else None,
             "paired": self.paired,
             "summary": self.summary,
+            "version": self.version,
+            "version_mismatch": status["mismatch"],
+            "version_detail": status["detail"],
         }
 
 
@@ -108,6 +115,8 @@ class NodeRegistry:
             current.os_name = announce.os_name
             current.arch = announce.arch
             current.preferred_backend = announce.preferred_backend or "auto"
+            if announce.version:
+                current.version = announce.version
             current.last_seen = moment
             current.source = "manual" if current.manual else "discovery"
             return current
@@ -132,6 +141,7 @@ class NodeRegistry:
         limits: NodeLimits | None = None,
         paired: bool | None = None,
         summary: str | None = None,
+        version: str | None = None,
         seen: bool = True,
         now: float | None = None,
     ) -> TrackedNode:
@@ -181,6 +191,8 @@ class NodeRegistry:
                 current.paired = paired
             if summary is not None:
                 current.summary = summary
+            if version is not None:
+                current.version = version
             if seen:
                 current.last_seen = moment
             return current

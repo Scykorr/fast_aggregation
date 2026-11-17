@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from fast_aggregation import __version__
+from fast_aggregation.version import full_version
 from fast_aggregation.cluster.planner import choose_backend
 from fast_aggregation.constants import SOFTWARE
 from fast_aggregation.errors import FastAggError, RuntimeError_
@@ -88,6 +88,7 @@ class NodeService:
             arch=self.resources.arch,
             preferred_backend=self.settings.preferred_backend,
             software=SOFTWARE,
+            version=full_version(),
         )
 
     def describe(self) -> dict:
@@ -97,7 +98,7 @@ class NodeService:
             "node_id": self.settings.node_id,
             "name": self.settings.name,
             "software": SOFTWARE,
-            "version": __version__,
+            "version": full_version(),
             "advertise_host": self.settings.advertise_host,
             "http_port": self.settings.http_port,
             "rpc_port": self.settings.rpc_port,

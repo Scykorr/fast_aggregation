@@ -156,6 +156,7 @@ class Announce:
     arch: str
     preferred_backend: str = "auto"
     software: str = "fast-aggregation"
+    version: str = ""
     paired: bool = True
     summary: str = ""
     role: str = "node"

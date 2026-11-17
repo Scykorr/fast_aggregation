@@ -50,9 +50,19 @@ jobs:
         working-directory: android
         run: gradle test assembleDebug --no-daemon
 
+      - name: Name the APK with the product version and run number
+        run: |
+          set -euo pipefail
+          export PYTHONPATH=src
+          file="$(python3 -c 'from fast_aggregation.version import file_version; print(file_version())')"
+          echo "FASTAGG_FILE=$file" >> "$GITHUB_ENV"
+          src="android/app/build/outputs/apk/debug/app-debug.apk"
+          dest="android/app/build/outputs/apk/debug/fastagg-${file}.apk"
+          mv "$src" "$dest"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: fastagg-android
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: fastagg-android-${{ env.FASTAGG_FILE }}
+          path: android/app/build/outputs/apk/debug/fastagg-*.apk
           if-no-files-found: error

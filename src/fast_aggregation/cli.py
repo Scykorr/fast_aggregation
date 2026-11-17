@@ -40,6 +40,7 @@ from fast_aggregation.security.token import (
     save_membership,
 )
 from fast_aggregation.runtime.downloads import ensure_runtime, executable, stage_archive
+from fast_aggregation.version import full_version
 from fast_aggregation.runtime.releases import engine_backend
 
 
@@ -61,6 +62,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
         prog="fastagg",
         description="Распределённый запуск LLM в локальной сети через llama.cpp RPC.",
     )
+    parser.add_argument("--version", action="version", version=f"fastagg {full_version()}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="Показать ресурсы этой машины")
@@ -568,6 +570,7 @@ def _run_coordinator(
             paired=True,
             summary="координатор",
             fingerprint=fingerprint,
+            version=full_version(),
         )
     )
     app = create_coordinator_app(service, discovery)

@@ -196,6 +196,7 @@ class NodeService : Service() {
             "rpc_port" to 50052,
             "software" to "fast-aggregation",
             "v" to 1,
+            "version" to BuildConfig.VERSION_NAME,
         )
         val token = prefs().getString("token", null)
         val base = canonicalAnnounce(fields)
@@ -212,7 +213,7 @@ class NodeService : Service() {
         val battery = batteryPercent()
         val plugged = isPlugged()
         val opencl = hasAdreno()
-        return """{"node_id":"${nodeId()}","name":"${android.os.Build.MODEL}","software":"fast-aggregation","version":"0.1.0","advertise_host":"${localIpv4()}","http_port":47000,"rpc_port":50052,"preferred_backend":"${if (opencl) "opencl" else "cpu"}","resources":{"os_name":"Android","os_version":"${android.os.Build.VERSION.RELEASE}","arch":"arm64","cpu_model":"${android.os.Build.HARDWARE}","cpu_physical":null,"cpu_logical":${Runtime.getRuntime().availableProcessors()},"ram_total_mb":$total,"ram_available_mb":$free,"gpus":[],"backends":[{"name":"cpu","available":true,"detail":"вшитый ggml-rpc-server"},{"name":"opencl","available":$opencl,"detail":"Adreno kgsl"}],"cpu_percent":null,"temperature_c":${temp ?: "null"},"battery_percent":${battery ?: "null"},"power_plugged":$plugged,"device_class":"phone"},"rpc":{"running":${rpc?.isAlive == true},"backend":${rpcBackend?.let { "\"$it\"" } ?: "null"},"error":null,"log_tail":[]}}"""
+        return """{"node_id":"${nodeId()}","name":"${android.os.Build.MODEL}","software":"fast-aggregation","version":"${BuildConfig.VERSION_NAME}","advertise_host":"${localIpv4()}","http_port":47000,"rpc_port":50052,"preferred_backend":"${if (opencl) "opencl" else "cpu"}","resources":{"os_name":"Android","os_version":"${android.os.Build.VERSION.RELEASE}","arch":"arm64","cpu_model":"${android.os.Build.HARDWARE}","cpu_physical":null,"cpu_logical":${Runtime.getRuntime().availableProcessors()},"ram_total_mb":$total,"ram_available_mb":$free,"gpus":[],"backends":[{"name":"cpu","available":true,"detail":"вшитый ggml-rpc-server"},{"name":"opencl","available":$opencl,"detail":"Adreno kgsl"}],"cpu_percent":null,"temperature_c":${temp ?: "null"},"battery_percent":${battery ?: "null"},"power_plugged":$plugged,"device_class":"phone"},"rpc":{"running":${rpc?.isAlive == true},"backend":${rpcBackend?.let { "\"$it\"" } ?: "null"},"error":null,"log_tail":[]}}"""
     }
 
     private fun hottestCelsius(): Double? {

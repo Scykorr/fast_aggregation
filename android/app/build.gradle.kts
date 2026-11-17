@@ -3,6 +3,22 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Версия читается из src/fast_aggregation/__init__.py. Формула versionCode
+// совпадает с fast_aggregation.version.android_version_code:
+// major * 100_000_000 + minor * 1_000_000 + patch * 10_000 + номер сборки CI.
+val fastaggVersion = Regex("""__version__\s*=\s*["']([^"']+)["']""")
+    .find(file("../../src/fast_aggregation/__init__.py").readText())
+    ?.groupValues
+    ?.get(1)
+    ?: error("В src/fast_aggregation/__init__.py нет __version__")
+val fastaggBuild = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+val fastaggRelease = Regex("""^(\d+)\.(\d+)\.(\d+)""").find(fastaggVersion)
+    ?: error("версия должна быть major.minor.patch")
+val (fastaggMajor, fastaggMinor, fastaggPatch) = fastaggRelease.groupValues.drop(1).map { it.toInt() }
+val fastaggVersionCode =
+    fastaggMajor * 100_000_000 + fastaggMinor * 1_000_000 + fastaggPatch * 10_000 + fastaggBuild
+val fastaggVersionName = if (fastaggBuild > 0) "$fastaggVersion+$fastaggBuild" else fastaggVersion
+
 android {
     namespace = "io.fastagg.node"
     compileSdk = 34
@@ -11,8 +27,8 @@ android {
         applicationId = "io.fastagg.node"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = fastaggVersionCode
+        versionName = fastaggVersionName
     }
 
     buildTypes {

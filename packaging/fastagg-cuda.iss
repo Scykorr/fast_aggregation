@@ -1,4 +1,6 @@
 ; Отдельный установщик с вшитыми сборками CUDA 12.4 и 13.5 и DLL cudart.
+#ifndef SetupBaseName
+#define SetupBaseName "fastagg-setup-cuda-0.2.0"
+#endif
 #define BundleCuda
-#define SetupBaseName "fastagg-setup-cuda-0.1.0"
 #include "fastagg.iss"

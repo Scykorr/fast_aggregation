@@ -22,6 +22,12 @@ jobs:
           python -m pip install .
           python -m pip install pyinstaller pystray pillow
 
+      - name: Stamp version from the run number
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          python -c "from fast_aggregation.version import file_version, full_version, product_version, windows_quad; import os; path=os.environ['GITHUB_ENV']; open(path,'a',encoding='utf-8').write('FASTAGG_FILE={0}\nFASTAGG_FULL={1}\nFASTAGG_PRODUCT={2}\nFASTAGG_QUAD={3}\n'.format(file_version(), full_version(), product_version(), windows_quad()))"
+
       - name: Build exe
         run: pyinstaller packaging/fastagg.spec --noconfirm --distpath dist --workpath build/pyinstaller
 
@@ -51,13 +57,19 @@ jobs:
 
       - name: Build installers
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\fastagg.iss
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\fastagg-cuda.iss
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $common = @(
+            "/DMyAppVersion=$env:FASTAGG_PRODUCT",
+            "/DMyAppVersionFull=$env:FASTAGG_FULL",
+            "/DMyAppVersionQuad=$env:FASTAGG_QUAD"
+          )
+          & $iscc @common "/DSetupBaseName=fastagg-setup-$env:FASTAGG_FILE" packaging\fastagg.iss
+          & $iscc @common "/DSetupBaseName=fastagg-setup-cuda-$env:FASTAGG_FILE" packaging\fastagg-cuda.iss
 
       - name: Upload exe and installer
         uses: actions/upload-artifact@v4
         with:
-          name: fastagg-windows
+          name: fastagg-windows-${{ env.FASTAGG_FILE }}
           path: |
             dist/fastagg.exe
             dist/installer/*.exe

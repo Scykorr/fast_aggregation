@@ -182,7 +182,7 @@
 
 `POST /api/pull` принимает ссылку Hugging Face или имя с `/` и отвечает, что качать нужно с вкладки «Модели» или `fastagg pull`. Имя реестра Ollama вроде `qwen3:8b` — `400`. `POST /api/create` всегда `400`: Modelfile здесь не собирается.
 
-`GET /api/version` → `{"version":"fastagg-0.1.0"}`.
+`GET /api/version` сохраняет форму Ollama (одно строковое поле `version` — выпуск, например `0.2.0`) и добавляет `fastagg_version`. В сборке CI туда дописан номер прогона: `{"version":"0.2.0","fastagg_version":"0.2.0+14"}`. Те же два поля есть в `GET /fastagg/health` и `GET /api/health`.
 
 ## 3. Очередь
 

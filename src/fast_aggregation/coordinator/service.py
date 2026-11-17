@@ -18,6 +18,7 @@ from fast_aggregation.cluster.health import shed_reasons
 from fast_aggregation.cluster.planner import plan_placement
 from fast_aggregation.cluster.registry import NodeRegistry
 from fast_aggregation.constants import COORDINATOR_PORT, DEFAULT_LLAMA_RELEASE, ENGINE_PORT, NODE_HTTP_PORT
+from fast_aggregation.version import full_version, product_version
 from fast_aggregation.coordinator.client import HttpNodeClient, NodeClient
 from fast_aggregation.discovery.scan import hosts_in_cidr, scan_tcp
 from fast_aggregation.errors import FastAggError, RuntimeError_
@@ -134,6 +135,7 @@ class CoordinatorService:
             manual=manual,
             paired=bool(payload["paired"]) if "paired" in payload else None,
             summary=str(payload.get("summary") or "") or None,
+            version=str(payload["version"]) if payload.get("version") else None,
         )
 
     def add_manual(self, address: str) -> dict:
@@ -517,6 +519,8 @@ class CoordinatorService:
             "engine": engine,
             "pairing": self._pairing_view() if reveal_pair else None,
             "bench": self.bench_view(),
+            "version": product_version(),
+            "fastagg_version": full_version(),
             "links": [
                 {
                     "node_id": node.get("node_id"),

@@ -2,19 +2,28 @@
 ; Рядом должны лежать dist\fastagg.exe и, по желанию, packaging\runtimes\*.zip
 
 #define MyAppName "fastagg"
-#define MyAppVersion "0.1.0"
+#ifndef MyAppVersion
+#define MyAppVersion "0.2.0"
+#endif
+#ifndef MyAppVersionFull
+#define MyAppVersionFull "0.2.0"
+#endif
+#ifndef MyAppVersionQuad
+#define MyAppVersionQuad "0.2.0.0"
+#endif
 #define MyAppExe "fastagg.exe"
 
 [Setup]
 AppId={{7F3A9C2E-6B14-4F0A-9D55-FA57A66E1101}}
 AppName={#MyAppName}
-AppVersion={#MyAppVersion}
+AppVersion={#MyAppVersionFull}
+VersionInfoVersion={#MyAppVersionQuad}
 AppPublisher=fastagg
 DefaultDirName={autopf}\fastagg
 DefaultGroupName=fastagg
 OutputDir=..\dist\installer
 #ifndef SetupBaseName
-#define SetupBaseName "fastagg-setup-0.1.0"
+#define SetupBaseName "fastagg-setup-0.2.0"
 #endif
 OutputBaseFilename={#SetupBaseName}
 Compression=lzma2
