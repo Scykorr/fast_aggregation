@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>fastagg</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10140f;
+      --panel: #1a2118;
+      --line: #2d3a2a;
+      --text: #e7f0e2;
+      --muted: #9aab96;
+      --ok: #8fce6a;
+      --warn: #e2c16b;
+      --bad: #e07a6a;
+      --accent: #c6f27a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.45 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-end; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0; font-size: 22px; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    nav { display: flex; gap: 8px; padding: 12px 20px 0; }
+    nav button { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    nav button.active { background: var(--accent); color: #17200f; border-color: var(--accent); }
+    main { padding: 16px 20px 32px; }
+    .panel { display: none; }
+    .panel.on { display: grid; gap: 16px; }
+    section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+    .card b { display: block; font-size: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-size: 12px; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .phase { font-weight: 700; }
+    .phase.running { color: var(--ok); }
+    .phase.error { color: var(--bad); }
+    form, .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+    input, select, textarea { background: #0e130d; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    textarea { width: 100%; min-height: 72px; resize: vertical; }
+    button { background: var(--accent); color: #17200f; border: 0; border-radius: 8px; padding: 8px 12px; font-weight: 700; cursor: pointer; }
+    button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+    button:disabled { opacity: .55; cursor: wait; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--bad); }
+    .dot.on { background: var(--ok); }
+    .chat-layout { display: grid; grid-template-columns: 220px 1fr; gap: 12px; min-height: 420px; }
+    .chats button { display: block; width: 100%; text-align: left; margin-bottom: 6px; }
+    .messages { display: flex; flex-direction: column; gap: 8px; max-height: 480px; overflow: auto; }
+    .bubble { border-radius: 10px; padding: 8px 10px; white-space: pre-wrap; }
+    .bubble.user { background: #243024; }
+    .bubble.assistant { background: #121812; border: 1px solid var(--line); }
+    pre { white-space: pre-wrap; background: #0e130d; border-radius: 8px; padding: 10px; margin: 8px 0 0; max-height: 220px; overflow: auto; }
+    .pair code, .pair input { font-family: ui-monospace, Consolas, monospace; }
+    .bar { height: 10px; background: #0e130d; border-radius: 6px; overflow: hidden; margin: 8px 0; }
+    .bar span { display: block; height: 100%; width: 0; background: var(--accent); }
+    footer { padding: 8px 20px 20px; }
+    #hf-choices { display: grid; gap: 8px; margin-top: 10px; }
+    @media (max-width: 800px) { .chat-layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>fastagg <span id="header-version" class="muted"></span></h1>
+      <div class="muted">Локальный кластер. Интерфейс не ходит в интернет.</div>
+    </div>
+    <div>Состояние: <span id="phase" class="phase">…</span><div id="pair" class="muted"></div></div>
+  </header>
+  <nav>
+    <button type="button" data-tab="overview" class="active">Обзор</button>
+    <button type="button" data-tab="nodes">Узлы</button>
+    <button type="button" data-tab="models">Модели</button>
+    <button type="button" data-tab="chat">Чат</button>
+    <button type="button" data-tab="api">Интеграции</button>
+  </nav>
+  <p id="version-warn" class="warn" hidden></p>
+  <main>
+    <div id="overview" class="panel on">
+      <section class="pair">
+        <h2>Подключить узел</h2>
+        <div class="pair-body"><p class="muted">Код и ссылка появятся здесь.</p></div>
+      </section>
+      <section>
+        <h2>Ёмкость кластера</h2>
+        <div id="cards" class="cards"></div>
+        <div id="notes" class="muted"></div>
+      </section>
+      <section>
+        <h2>Где лежат слои</h2>
+        <div id="layers">Модель не запущена.</div>
+        <div id="speed" class="muted"></div>
+      </section>
+      <section>
+        <h2>Журнал llama-server</h2>
+        <pre id="log">Процесс ещё не запускался.</pre>
+      </section>
+    </div>
+    <div id="nodes" class="panel">
+      <section>
+        <h2>Узлы</h2>
+        <div id="node-table">Загрузка…</div>
+        <form id="manual">
+          <label>Подключить по адресу<input id="address" type="text" placeholder="192.168.1.20:47000" /></label>
+          <button type="submit">Подключить</button>
+        </form>
+        <section class="pair">
+          <h2>Подключить узел</h2>
+          <div class="pair-body"><p class="muted">Код и ссылка появятся здесь.</p></div>
+        </section>
+        <form id="scan-form">
+          <label>Скан подсети<input id="cidr" type="text" placeholder="10.32.237.0/24" /></label>
+          <button type="submit" class="ghost">Сканировать</button>
+        </form>
+        <div id="scan-box" class="muted"></div>
+        <div id="node-msg" class="bad"></div>
+      </section>
+    </div>
+    <div id="models" class="panel">
+      <section>
+        <h2>Что поместится</h2>
+        <form id="ctx-form">
+          <label>Контекст для оценки<input id="ctx" type="number" min="256" step="256" value="4096" /></label>
+          <label>CPU-узлы<input id="allow-cpu" type="checkbox" /></label>
+          <button type="submit" class="ghost">Пересчитать</button>
+        </form>
+        <div id="recs"></div>
+      </section>
+      <section>
+        <h2>Скачать модель</h2>
+        <p class="muted">Интернет нужен только для этой загрузки. Вставьте ссылку на файл .gguf или на репозиторий, затем выберите квантование. Токен нужен лишь для закрытых моделей и хранится на этом компьютере.</p>
+        <form id="pull-form">
+          <label>Ссылка<input id="hf-url" type="text" placeholder="организация/модель или ссылка на файл .gguf" /></label>
+          <label>Токен, если модель закрытая<input id="hf-token" type="password" autocomplete="off" /></label>
+          <button type="submit">Показать файлы</button>
+        </form>
+        <div id="hf-choices"></div>
+        <div id="pull-box"></div>
+        <div id="pull-msg" class="bad"></div>
+      </section>
+      <section>
+        <h2>Локальные GGUF</h2>
+        <form id="models-dir-form">
+          <label>Папки моделей, по одной в строке<textarea id="models-dirs" rows="3" placeholder="C:\models&#10;D:\models"></textarea></label>
+          <label>Куда качать<input id="models-dir-input" type="text" placeholder="D:\models" /></label>
+          <button type="submit" class="ghost">Сохранить папку</button>
+        </form>
+        <p id="net-box" class="muted"></p>
+        <p id="models-dir" class="muted">Папка моделей координатора. Её можно сменить флагом --models-dir.</p>
+        <div id="file-msg" class="bad"></div>
+        <div id="files">Папка не задана.</div>
+      </section>
+    </div>
+    <div id="api" class="panel">
+      <section>
+        <h2>Интеграции / API</h2>
+        <p class="muted">Порт для RAG на этой же машине. По умолчанию только localhost. Из Docker в WSL используйте host.docker.internal и host-gateway.</p>
+        <div id="api-box">Загрузка…</div>
+      </section>
+      <section>
+        <h2>RAG-5060</h2>
+        <p class="muted">Папка проекта на Windows. Путь для WSL считается сам. Файлы правятся только в этой папке.</p>
+        <form id="rag-form">
+          <label>Папка проекта<input id="rag-path" type="text" placeholder="D:\RAG 5060" /></label>
+          <label>Дистрибутив WSL<input id="rag-distro" type="text" placeholder="Ubuntu-24.04" /></label>
+          <label>Работать через кластер<input id="rag-cluster" type="checkbox" /></label>
+          <label>Запускать RAG вместе с агрегатором<input id="rag-auto" type="checkbox" /></label>
+          <button type="submit">Сохранить</button>
+        </form>
+        <p>
+          <button type="button" id="rag-up" class="ghost">Запустить</button>
+          <button type="button" id="rag-down" class="ghost">Остановить</button>
+          <button type="button" id="rag-local" class="ghost">Вернуть локальный Ollama</button>
+        </p>
+        <p id="rag-status" class="muted">Статус появится после сохранения.</p>
+        <pre id="rag-log"></pre>
+      </section>
+    </div>
+    <div id="chat" class="panel">
+      <section>
+        <div class="chat-layout">
+          <div>
+            <button type="button" id="new-chat">Новый диалог</button>
+            <div id="chat-list" class="chats"></div>
+          </div>
+          <div>
+            <div id="messages" class="messages"></div>
+            <form id="composer">
+              <textarea id="prompt" placeholder="Сообщение"></textarea>
+              <button type="submit" id="send">Отправить</button>
+            </form>
+            <div id="chat-msg" class="muted"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.querySelector(id);
+    let state = {nodes: [], phase: "idle", plan: null, engine: null};
+    let capacity = null;
+    let engine = {layers: [], slots: []};
+    let models = [];
+    const storeKey = "fastagg-chats";
+    let chats = loadChats();
+    let current = chats[0] ? chats[0].id : null;
+
+    function loadChats() {
+      try { return JSON.parse(localStorage.getItem(storeKey) || "[]"); }
+      catch (error) { return []; }
+    }
+    function saveChats() { localStorage.setItem(storeKey, JSON.stringify(chats)); }
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+    }
+    function mb(value) {
+      if (value == null) return "н/д";
+      if (value >= 1024) return (value / 1024).toFixed(1) + " ГиБ";
+      return Math.round(value) + " МиБ";
+    }
+
+    document.querySelectorAll("nav button").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("nav button").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((item) => item.classList.remove("on"));
+        button.classList.add("active");
+        $("#" + button.dataset.tab).classList.add("on");
+      });
+    });
+
+    function render() {
+      const shown = state.fastagg_version || state.version || "";
+      const ports = state.ports || {};
+      const net = $("#net-box");
+      if (net) {
+        const bits = [];
+        if (ports.dashboard) bits.push("дашборд " + ports.dashboard);
+        if (ports.api) bits.push("API " + (ports.api_bind || "") + ":" + ports.api);
+        if (ports.rpc) bits.push("RPC " + ports.rpc);
+        if (state.adapter) bits.push("адаптер " + state.adapter);
+        net.textContent = bits.join(" · ");
+        const warns = state.route_warnings || [];
+        if (warns.length) net.textContent += " " + warns.join(" ");
+      }
+      $("#header-version").textContent = shown;
+      $("#app-version").textContent = shown ? "fastagg " + shown : "";
+      const mismatches = (state.nodes || []).filter((node) => node.version_mismatch);
+      const warn = $("#version-warn");
+      warn.hidden = mismatches.length === 0;
+      warn.textContent = mismatches.map((node) => (node.name || node.node_id) + ": " + (node.version_detail || "другая версия")).join(" · ");
+      const phase = $("#phase");
+      phase.textContent = state.phase + (state.error ? " — " + state.error : "");
+      phase.className = "phase " + (state.phase || "");
+      const pair = $("#pair");
+      pair.textContent = state.pairing && state.pairing.code
+        ? "Код сопряжения: " + state.pairing.code
+        : "";
+      if (capacity) {
+        $("#cards").innerHTML = [
+          ["Сырая VRAM", mb(capacity.raw_vram_mib)],
+          ["Сырая ОЗУ", mb(capacity.raw_ram_mib)],
+          ["Пригодно", mb(capacity.usable_mib)],
+          ["Узлов в плане", capacity.node_count],
+          ["Медленный канал", capacity.slowest_mbps == null ? "н/д" : capacity.slowest_mbps + " Мбит/с"]
+        ].map((item) => `<div class="card"><span class="muted">${esc(item[0])}</span><b>${esc(item[1])}</b></div>`).join("");
+        $("#notes").textContent = (capacity.notes || []).join(" ");
+        const localRows = (capacity.local || []).map((row) => `<tr>
+          <td>${esc(row.label)} <span class="muted">${row.size_mib != null ? row.size_mib + " МиБ" : ""}</span></td>
+          <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
+          <td>${mb(row.need_mib)}</td>
+          <td>файл</td>
+          <td>${row.max_context || "—"}</td>
+        </tr>`).join("");
+        const rows = localRows + (capacity.recommendations || []).map((row) => `<tr>
+          <td>${esc(row.label)}</td>
+          <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
+          <td>${mb(row.need_mib)}</td>
+          <td>${speedText(row)}</td>
+          <td>${row.max_context || "—"}</td>
+        </tr>`).join("");
+        $("#recs").innerHTML = `<table><thead><tr><th>Модель</th><th></th><th>Нужно</th><th>Скорость</th><th>Макс. контекст</th></tr></thead><tbody>${rows}</tbody></table>`;
+      }
+      renderPair();
+      const layers = (engine.layers && engine.layers.length) ? engine.layers : ((state.plan && state.plan.devices) || []);
+      $("#layers").innerHTML = layers.length ? "<ul>" + layers.map((device) =>
+        `<li>${esc(device.node_name)} · ${esc(device.name)} · ${device.memory_mb} МиБ · ${(device.share * 100).toFixed(1)}%</li>`
+      ).join("") + "</ul>" : "Модель не запущена.";
+      renderBench();
+      const log = state.engine && state.engine.log_tail;
+      $("#log").textContent = log && log.length ? log.join("\n") : "Процесс ещё не запускался.";
+      renderNodes();
+      renderFiles();
+      renderChats();
+    }
+
+    function renderNodes() {
+      const rows = (state.nodes || []).map((node) => {
+        const res = node.resources || {};
+        const limits = node.limits || {};
+        const gpus = (res.gpus || []).map((gpu) => `${esc(gpu.name)} ${mb(gpu.vram_free_mb)}/${mb(gpu.vram_total_mb)} ${gpu.temperature_c != null ? Math.round(gpu.temperature_c) + "°C" : ""}`).join("<br>") || "нет";
+        return `<tr>
+          <td><span class="dot ${node.online ? "on" : ""}"></span>${esc(node.name)}<div class="muted">${esc(node.host)}:${node.http_port}</div>${node.version && !node.version_mismatch ? `<div class="muted">${esc(node.version)}</div>` : ""}${node.version_mismatch ? `<div class="warn">${esc(node.version_detail || "другая версия")}</div>` : ""}</td>
+          <td>${esc(res.cpu_model || "—")}<div class="muted">${res.cpu_percent != null ? Math.round(res.cpu_percent) + "% · " : ""}${mb(res.ram_available_mb)} своб.</div></td>
+          <td>${gpus}</td>
+          <td>${res.temperature_c != null ? Math.round(res.temperature_c) + " °C" : "н/д"}<div class="muted">${res.battery_percent != null ? "батарея " + Math.round(res.battery_percent) + "%" : esc(res.device_class || "")}</div></td>
+          <td>${node.bandwidth_mbps != null ? node.bandwidth_mbps + " Мбит/с" : "н/д"}<div class="muted">${node.rtt_ms != null ? node.rtt_ms + " мс" : ""}</div></td>
+          <td>${limits.excluded ? "исключён" : "в расчёте"}${node.paired === false ? "<div class='warn'>не сопряжён</div>" : ""}<div class="muted">${esc(node.summary || "")}</div></td>
+          <td>
+            <button class="ghost" data-exclude="${esc(node.node_id)}" data-value="${limits.excluded ? "0" : "1"}">${limits.excluded ? "Вернуть" : "Исключить"}</button>
+            <form data-limits="${esc(node.node_id)}">
+              <input name="max_temp_c" type="number" placeholder="макс °C" value="${limits.max_temp_c ?? ""}" />
+              <input name="min_battery_percent" type="number" placeholder="мин %" value="${limits.min_battery_percent ?? ""}" />
+              <input name="memory_reserve_mb" type="number" placeholder="запас МиБ" value="${limits.memory_reserve_mb ?? ""}" />
+              <input name="memory_cap_mb" type="number" placeholder="потолок МиБ" value="${limits.memory_cap_mb ?? ""}" />
+              <button type="submit" class="ghost">Лимиты</button>
+            </form>
+            ${node.paired === false ? `<button class="ghost" data-offer="${esc(node.host)}" data-port="${node.http_port}">Сопрячь</button>` : ""}
+            ${node.source === "manual" ? `<button class="ghost" data-remove="${esc(node.node_id)}">Отключить</button>` : ""}
+          </td>
+        </tr>`;
+      }).join("");
+      $("#node-table").innerHTML = rows ? `<table><thead><tr><th>Узел</th><th>CPU / ОЗУ</th><th>GPU</th><th>Состояние</th><th>Сеть</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>` : "<p class='muted'>Узлов нет.</p>";
+    }
+
+    function renderFiles() {
+      if (!models.length) {
+        $("#files").textContent = "В папке моделей нет GGUF или папка не задана.";
+        return;
+      }
+      $("#files").innerHTML = "<table><thead><tr><th>Файл</th><th>Размер</th><th>Нужно</th><th></th><th></th></tr></thead><tbody>" +
+        models.map((item) => `<tr>
+          <td>${esc(item.name)}</td>
+          <td>${mb(item.size_mib)}</td>
+          <td>${mb(item.need_mib)}</td>
+          <td class="${item.fits ? "ok" : "bad"}">${item.fits ? "влезет" : esc(item.error || "не влезет")}</td>
+          <td><button class="ghost" data-start="${esc(item.path)}">Развернуть</button></td>
+        </tr>`).join("") + "</tbody></table>";
+    }
+
+    function renderPair() {
+      const pair = state.pairing;
+      const html = !pair ? "<p class='muted'>Ссылка сопряжения показывается на компьютере координатора.</p>"
+        : pairHtml(pair);
+      document.querySelectorAll(".pair-body").forEach((node) => { node.innerHTML = html; });
+      document.querySelectorAll("[data-copy]").forEach((button) => {
+        button.onclick = async () => {
+          const text = button.getAttribute("data-copy") || "";
+          try { await navigator.clipboard.writeText(text); button.textContent = "Скопировано"; }
+          catch (error) {
+            const box = button.parentElement && button.parentElement.querySelector("input");
+            if (box) { box.focus(); box.select(); }
+          }
+        };
+      });
+      const rotate = document.querySelector("#new-code");
+      if (rotate) rotate.onclick = async () => {
+        await fetch("/api/pair/rotate", {method: "POST"});
+        refresh();
+      };
+    }
+    function pairHtml(pair) {
+      const links = pair.links || [];
+      const first = links[0];
+      const rows = links.map((item) => `<div>
+        <div class="muted">${esc(item.host)}</div>
+        <input readonly value="${esc(item.uri)}" />
+        <button type="button" class="ghost" data-copy="${esc(item.uri)}">Копировать ссылку</button>
+        <input readonly value="${esc(item.command)}" />
+        <button type="button" class="ghost" data-copy="${esc(item.command)}">Копировать команду</button>
+      </div>`).join("") || "<p class='warn'>Нет адреса локальной сети, только петля. Подключите адаптер LAN.</p>";
+      const qr = first ? `<img alt="QR" src="/api/pair/qr.svg?host=${encodeURIComponent(first.host)}" width="180" height="180" />` : "";
+      return `<p>Код: <b>${esc(pair.code)}</b></p>
+        <p class="muted">Отпечаток: ${esc(pair.fingerprint || "")}</p>
+        ${qr}
+        ${rows}
+        <button type="button" id="new-code" class="ghost">Новый код</button>`;
+    }
+
+    function speedText(row) {
+      const estimate = row.estimate_tps != null ? row.estimate_tps : row.tokens_per_second;
+      const lines = [];
+      if (estimate != null) lines.push(estimate + " оценка");
+      if (row.speed_kind === "оценка по замеру" && row.calibrated_tps != null) {
+        lines.push(row.calibrated_tps + " оценка по замеру");
+        if (row.calibration_source) lines.push(row.calibration_source);
+      }
+      return lines.join("<br>") || "—";
+    }
+    function renderBench() {
+      const bench = state.bench || {};
+      const latest = bench.latest;
+      const links = (state.links || []).map((item) =>
+        esc(item.name) + ": " + (item.bandwidth_mbps == null ? "н/д" : item.bandwidth_mbps + " Мбит/с")
+      ).join(", ");
+      let text = "Замера ещё нет. Оценка в таблице — формула, не замер.";
+      if (bench.status === "running") text = "Идёт замер. Пока он не кончится, чат его отменит.";
+      if (bench.status === "error") text = "Замер не удался: " + (bench.error || "");
+      if (latest && latest.generation_tps != null) {
+        const kind = latest.stale ? "замер устарел" : "замер";
+        const day = String(latest.measured_at || "").slice(0, 10);
+        text = kind + ": префилл " + latest.prefill_tps + " ток/с, генерация " + latest.generation_tps + " ток/с, " + day;
+      }
+      $("#speed").innerHTML = esc(text) + "<br><span class='muted'>Каналы RPC: " + (links || "ещё не измерялись") + "</span><br>"
+        + "<button type='button' id='run-bench' class='ghost'>Замерить скорость</button> "
+        + "<button type='button' id='cancel-bench' class='ghost'>Отмена</button>";
+      const run = document.querySelector("#run-bench");
+      const cancel = document.querySelector("#cancel-bench");
+      if (run) run.onclick = async () => {
+        const response = await fetch("/api/bench", {method: "POST"});
+        const data = await response.json();
+        if (!response.ok) $("#speed").insertAdjacentHTML("beforeend", "<div class='bad'>" + esc(data.detail || "") + "</div>");
+        refresh();
+      };
+      if (cancel) cancel.onclick = async () => {
+        await fetch("/api/bench/cancel", {method: "POST"});
+        refresh();
+      };
+    }
+
+    function renderChats() {
+      if (!current) {
+        const created = {id: String(Date.now()), title: "Диалог", messages: []};
+        chats = [created];
+        current = created.id;
+        saveChats();
+      }
+      $("#chat-list").innerHTML = chats.map((chat) =>
+        `<button type="button" class="ghost" data-chat="${esc(chat.id)}">${esc(chat.title)}</button>`
+      ).join("");
+      const chat = chats.find((item) => item.id === current);
+      $("#messages").innerHTML = (chat ? chat.messages : []).map((message) =>
+        `<div class="bubble ${message.role}">${esc(message.content)}</div>`
+      ).join("");
+    }
+
+    async function refresh() {
+      const response = await fetch("/api/state");
+      state = await response.json();
+      const ctx = Number($("#ctx").value) || 4096;
+      const allow = $("#allow-cpu").checked;
+      const cap = await fetch(`/api/capacity?ctx=${ctx}&allow_cpu=${allow}`);
+      capacity = await cap.json();
+      const eng = await fetch("/api/engine");
+      engine = await eng.json();
+      const files = await fetch(`/api/models?ctx=${ctx}&allow_cpu=${allow}`);
+      const body = await files.json();
+      models = body.models || [];
+      if (body.directories && $("#models-dirs") && !$("#models-dirs").value) $("#models-dirs").value = body.directories.join("\n");
+      if (body.directory) {
+        $("#models-dir").textContent = "Папка: " + body.directory;
+        const input = $("#models-dir-input");
+        if (input && !input.value) input.value = body.directory;
+      }
+      render();
+    }
+
+    let pullChoices = [];
+    let pullTimer = null;
+    function fmtBytes(value) {
+      if (value == null) return "н/д";
+      return mb(value / (1024 * 1024));
+    }
+    function renderPull(job) {
+      if (!job || !job.status || job.status === "idle") {
+        $("#pull-box").innerHTML = "";
+        return;
+      }
+      const total = job.bytes_total || 0;
+      const pct = total ? Math.min(100, Math.round(100 * job.bytes_done / total)) : 0;
+      const speed = job.speed_bps ? (job.speed_bps / (1024 * 1024)).toFixed(1) + " МиБ/с" : "скорость считается";
+      const eta = job.eta_sec == null ? "" : " · ещё " + Math.max(0, Math.round(job.eta_sec)) + " с";
+      const controls = job.status === "running"
+        ? "<button type='button' id='pull-pause' class='ghost'>Пауза</button> <button type='button' id='pull-cancel' class='ghost'>Отмена</button>"
+        : job.status === "paused"
+          ? "<button type='button' id='pull-resume'>Продолжить</button> <button type='button' id='pull-cancel' class='ghost'>Отмена</button>"
+          : "";
+      $("#pull-box").innerHTML = `<div>${esc(job.name)} · ${esc(job.status)} · ${fmtBytes(job.bytes_done)} / ${fmtBytes(job.bytes_total)}${eta}</div>
+        <div class="bar"><span style="width:${pct}%"></span></div>
+        <div class="muted">${esc(speed)} · файл ${job.file_index || 0} из ${job.file_count || 0}</div>
+        ${controls}`;
+      const pause = document.querySelector("#pull-pause");
+      const resume = document.querySelector("#pull-resume");
+      const cancel = document.querySelector("#pull-cancel");
+      if (pause) pause.onclick = () => fetch("/api/models/pull/pause", {method: "POST"});
+      if (resume) resume.onclick = () => fetch("/api/models/pull/resume", {method: "POST"});
+      if (cancel) cancel.onclick = () => fetch("/api/models/pull/cancel", {method: "POST"});
+    }
+    function watchPull() {
+      if (pullTimer) return;
+      pullTimer = setInterval(async () => {
+        const response = await fetch("/api/models/pull");
+        const job = await response.json();
+        renderPull(job);
+        if (["idle", "done", "error", "cancelled"].includes(job.status)) {
+          clearInterval(pullTimer);
+          pullTimer = null;
+          if (job.status === "error") $("#pull-msg").textContent = job.error || "Скачивание не удалось";
+          if (job.status === "done") refresh();
+        }
+      }, 700);
+    }
+
+    $("#manual").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const response = await fetch("/api/nodes", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({address: $("#address").value})});
+      const data = await response.json();
+      $("#node-msg").textContent = response.ok ? "" : (data.detail || "Не подключено");
+      refresh();
+    });
+    $("#scan-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("#node-msg").textContent = "";
+      const response = await fetch("/api/scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cidr: $("#cidr").value})});
+      const started = await response.json();
+      if (!response.ok) {
+        $("#node-msg").textContent = started.detail || "Скан не удался";
+        return;
+      }
+      const timer = setInterval(async () => {
+        const stateResponse = await fetch("/api/scan");
+        const job = await stateResponse.json();
+        const found = job.found || [];
+        const list = found.map((item) => `<div>${esc(item.name)} · ${esc(item.host)} · ${esc(item.summary || "")}
+          ${item.paired ? "" : `<button type="button" class="ghost" data-offer="${esc(item.host)}" data-port="${item.port}">Сопрячь</button>`}
+        </div>`).join("");
+        $("#scan-box").innerHTML = `Проверено ${job.probed || 0} из ${job.total || 0}. ${esc(job.reason || job.status || "")}` + list;
+        if (job.status === "done" || job.status === "error") {
+          clearInterval(timer);
+          refresh();
+        }
+      }, 500);
+    });
+    $("#scan-box").addEventListener("click", async (event) => {
+      const offer = event.target.dataset && event.target.dataset.offer;
+      if (!offer) return;
+      const response = await fetch("/api/nodes/offer", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({host: offer, port: Number(event.target.dataset.port) || 47000})
+      });
+      const data = await response.json();
+      $("#node-msg").textContent = response.ok ? ("Сопряжение: " + (data.status || "отправлено")) : (data.detail || "Не отправлено");
+    });
+    $("#node-table").addEventListener("click", async (event) => {
+      const remove = event.target.dataset && event.target.dataset.remove;
+      const exclude = event.target.dataset && event.target.dataset.exclude;
+      const offer = event.target.dataset && event.target.dataset.offer;
+      if (offer) {
+        const response = await fetch("/api/nodes/offer", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({host: offer, port: Number(event.target.dataset.port) || 47000})
+        });
+        const data = await response.json();
+        $("#node-msg").textContent = response.ok ? ("Сопряжение: " + (data.status || "отправлено")) : (data.detail || "Не отправлено");
+      }
+      if (remove) {
+        await fetch("/api/nodes/" + encodeURIComponent(remove), {method: "DELETE"});
+        refresh();
+      }
+      if (exclude) {
+        await fetch("/api/nodes/" + encodeURIComponent(exclude) + "/limits", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({excluded: event.target.dataset.value === "1"})
+        });
+        refresh();
+      }
+    });
+    $("#node-table").addEventListener("submit", async (event) => {
+      const form = event.target;
+      if (!form.dataset || !form.dataset.limits) return;
+      event.preventDefault();
+      const payload = {excluded: false};
+      ["max_temp_c", "min_battery_percent", "memory_reserve_mb", "memory_cap_mb"].forEach((name) => {
+        const value = form.elements[name].value;
+        payload[name] = value === "" ? null : Number(value);
+      });
+      await fetch("/api/nodes/" + encodeURIComponent(form.dataset.limits) + "/limits", {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+      });
+      refresh();
+    });
+    $("#ctx-form").addEventListener("submit", (event) => { event.preventDefault(); refresh(); });
+    const dirForm = $("#models-dir-form");
+    if (dirForm) dirForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const paths = ($("#models-dirs") && $("#models-dirs").value || $("#models-dir-input").value).split(/\n+/).map((item) => item.trim()).filter(Boolean);
+      const response = await fetch("/api/models/dirs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({paths, download: $("#models-dir-input").value.trim()})});
+      const body = await response.json();
+      $("#file-msg").textContent = response.ok ? "" : (body.detail || "Папку сохранить не удалось");
+      if (response.ok) refresh();
+    });
+    $("#pull-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("#pull-msg").textContent = "";
+      const response = await fetch("/api/models/hf/inspect", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({url: $("#hf-url").value, token: $("#hf-token").value})
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        $("#pull-msg").textContent = data.detail || "Ссылку разобрать не удалось";
+        $("#hf-choices").innerHTML = "";
+        return;
+      }
+      pullChoices = data.choices || [];
+      $("#hf-choices").innerHTML = pullChoices.map((choice, index) => {
+        const size = choice.size == null ? "размер неизвестен" : mb(choice.size / (1024 * 1024));
+        return `<button type="button" class="ghost" data-choice="${index}">Скачать ${esc(choice.label)} · ${esc(size)}</button>`;
+      }).join("");
+    });
+    $("#hf-choices").addEventListener("click", async (event) => {
+      const index = event.target.dataset && event.target.dataset.choice;
+      if (index == null || index === "") return;
+      const choice = pullChoices[Number(index)];
+      if (!choice) return;
+      $("#pull-msg").textContent = "";
+      const response = await fetch("/api/models/pull", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({files: choice.files})
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        $("#pull-msg").textContent = data.detail || "Скачивание не началось";
+        return;
+      }
+      renderPull(data);
+      watchPull();
+    });
+    $("#files").addEventListener("click", async (event) => {
+      const path = event.target.dataset && event.target.dataset.start;
+      if (!path) return;
+      event.target.disabled = true;
+      const response = await fetch("/api/cluster/start", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({model_path: path, ctx_size: Number($("#ctx").value) || 4096, allow_cpu: $("#allow-cpu").checked, parallel: 1, reserve_mb: 512})
+      });
+      const data = await response.json();
+      if (!response.ok) $("#file-msg").textContent = data.detail || "Развернуть модель не удалось";
+      else $("#file-msg").textContent = "";
+      event.target.disabled = false;
+      refresh();
+    });
+
+    $("#new-chat").addEventListener("click", () => {
+      const created = {id: String(Date.now()), title: "Диалог", messages: []};
+      chats.unshift(created);
+      current = created.id;
+      saveChats();
+      renderChats();
+    });
+    $("#chat-list").addEventListener("click", (event) => {
+      const id = event.target.dataset && event.target.dataset.chat;
+      if (!id) return;
+      current = id;
+      renderChats();
+    });
+    $("#composer").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const text = $("#prompt").value.trim();
+      if (!text) return;
+      const chat = chats.find((item) => item.id === current);
+      chat.messages.push({role: "user", content: text});
+      chat.messages.push({role: "assistant", content: ""});
+      if (chat.title === "Диалог") chat.title = text.slice(0, 32);
+      $("#prompt").value = "";
+      saveChats();
+      renderChats();
+      const send = $("#send");
+      send.disabled = true;
+      $("#chat-msg").textContent = "";
+      try {
+        const response = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({model: "local", messages: chat.messages.slice(0, -1), stream: true})
+        });
+        if (!response.ok || !response.body) {
+          const data = await response.json().catch(() => ({}));
+          chat.messages.pop();
+          $("#chat-msg").textContent = data.detail || data.error && data.error.message || "Модель не отвечает";
+          saveChats();
+          renderChats();
+          return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        const target = chat.messages[chat.messages.length - 1];
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, {stream: true});
+          const parts = buffer.split("\n");
+          buffer = parts.pop();
+          for (const line of parts) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const payload = trimmed.slice(5).trim();
+            if (payload === "[DONE]") continue;
+            try {
+              const json = JSON.parse(payload);
+              const delta = json.choices && json.choices[0] && json.choices[0].delta;
+              if (delta && delta.content) target.content += delta.content;
+              if (json.timings && json.timings.predicted_per_second) {
+                $("#chat-msg").textContent = json.timings.predicted_per_second.toFixed(1) + " ток/с";
+              }
+            } catch (error) { /* неполный JSON */ }
+          }
+          renderChats();
+        }
+        saveChats();
+      } finally {
+        send.disabled = false;
+      }
+    });
+
+    function renderIntegration(info) {
+      if (!info) return;
+      const scheme = "ht" + "tp";
+      const port = info.api_port || 11435;
+      const hostUrl = scheme + "://127.0.0.1:" + port;
+      const wslUrl = scheme + "://host.docker.internal:" + port;
+      const lines = [
+        "OLLAMA_HOST=" + hostUrl,
+        "OLLAMA_MODEL=fastagg",
+        "EMBEDDING_URL=" + hostUrl + "/v1/embeddings",
+        "RERANK_URL=" + hostUrl + "/v1/rerank",
+        "FASTAGG_TOKEN="
+      ];
+      const roleLine = (title, role) => title + ": " + (role && role.available ? "да, узел " + (role.node_id || "") : "нет") + (role && role.replacing ? " (перенос)" : "");
+      $("#api-box").innerHTML = "<p>Хост: " + esc(hostUrl) + "</p><p>Из контейнера WSL: " + esc(wslUrl) + "</p>"
+        + "<pre>" + esc(lines.join("\n")) + "</pre>"
+        + "<p>" + esc(roleLine("Модель", info.llm)) + "</p>"
+        + "<p>" + esc(roleLine("Эмбеддинги", info.embedding)) + "</p>"
+        + "<p>" + esc(roleLine("Реранкер", info.reranker)) + "</p>"
+        + "<p class='muted'>Очередь: активно " + ((info.queue || {}).active || 0) + ", ждёт " + ((info.queue || {}).waiting || 0) + "</p>"
+        + "<button type='button' class='ghost' id='copy-env'>Копировать env</button>";
+      const button = document.querySelector("#copy-env");
+      if (button) button.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); } catch (error) {} };
+    }
+    function renderRag(info) {
+      if (!info) return;
+      const path = $("#rag-path");
+      const distro = $("#rag-distro");
+      if (path && document.activeElement !== path) path.value = info.path || "";
+      if (distro && document.activeElement !== distro) distro.value = info.distro || "";
+      const cluster = $("#rag-cluster");
+      const auto = $("#rag-auto");
+      if (cluster) cluster.checked = !!info.enabled;
+      if (auto) auto.checked = !!info.autostart;
+      const backend = info.backend === "cluster" ? "кластер fastagg" : (info.backend === "local" ? "локальный Ollama" : "не выбран");
+      const status = $("#rag-status");
+      if (status) status.textContent = "Путь в WSL: " + (info.wsl_path || "") + ". Модель RAG: " + backend + ".";
+      const log = $("#rag-log");
+      if (log) log.textContent = (info.log || []).join("\n");
+    }
+    async function ragPost(url, body) {
+      const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+      const payload = await response.json();
+      if (!response.ok) {
+        const log = $("#rag-log");
+        if (log) log.textContent = payload.detail || "Не удалось выполнить действие";
+        return;
+      }
+      renderRag(payload);
+    }
+    const ragForm = $("#rag-form");
+    if (ragForm) ragForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      ragPost("/api/rag", {path: $("#rag-path").value.trim(), distro: $("#rag-distro").value.trim(), autostart: $("#rag-auto").checked});
+    });
+    const ragCluster = $("#rag-cluster");
+    if (ragCluster) ragCluster.addEventListener("change", () => ragPost("/api/rag/cluster", {enabled: ragCluster.checked}));
+    const ragUp = $("#rag-up");
+    if (ragUp) ragUp.onclick = () => ragPost("/api/rag/up", {profile: "core"});
+    const ragDown = $("#rag-down");
+    if (ragDown) ragDown.onclick = () => ragPost("/api/rag/down", {profile: "core"});
+    const ragLocal = $("#rag-local");
+    if (ragLocal) ragLocal.onclick = () => ragPost("/api/rag/local", {});
+    fetch("/api/rag").then((response) => response.json()).then(renderRag).catch(() => {});
+    fetch("/api/integration").then((response) => response.json()).then(renderIntegration).catch(() => {});
+
+    refresh();
+    setInterval(refresh, 2000);
+    fetch("/api/models/pull").then((response) => response.json()).then((job) => {
+      renderPull(job);
+      if (job.status === "running" || job.status === "paused") watchPull();
+    }).catch(() => {});
+  </script>
+  <footer id="app-version" class="muted"></footer>
+</body>
+</html>
