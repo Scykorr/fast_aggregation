@@ -1,13 +1,30 @@
 # Подключается вторым файлом к compose RAG-5060.
 # Ollama выключается из профиля core и возвращается одним флагом --profile ollama.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.fastagg.yml --profile core up -d
-#   docker compose -f docker-compose.yml -f docker-compose.fastagg.yml --profile core --profile ollama up -d
+# Один профиль за раз. Оба сразу не передавать.
+#   --profile core    — стек RAG и модель кластера, контейнер ollama выключен
+#   --profile ollama  — тот же стек, но модель в локальном контейнере Ollama
 #
-# Проверка, что ollama не в плане:
-#   docker compose -f docker-compose.yml -f docker-compose.fastagg.yml --profile core config --services
+#   docker compose -f docker-compose.yml -f docker-compose.fastagg.yml --profile core up -d
+#   docker compose -f docker-compose.yml -f docker-compose.fastagg.yml --profile ollama up -d
 
 services:
+  postgres:
+    profiles: !override
+      - core
+      - ollama
+  valkey:
+    profiles: !override
+      - core
+      - ollama
+  qdrant:
+    profiles: !override
+      - core
+      - ollama
+  nginx:
+    profiles: !override
+      - core
+      - ollama
   ollama:
     # Базовый файл ставит profiles: ["core"]. Без !override оба списка сливаются,
     # и --profile core снова поднимает контейнер. Нужен Compose 2.24+.
@@ -15,6 +32,9 @@ services:
       - ollama
 
   api:
+    profiles: !override
+      - core
+      - ollama
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:

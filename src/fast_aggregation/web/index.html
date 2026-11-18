@@ -147,6 +147,11 @@
       </section>
       <section>
         <h2>Локальные GGUF</h2>
+        <form id="models-dir-form">
+          <label>Папка моделей<input id="models-dir-input" type="text" placeholder="D:\models" /></label>
+          <button type="submit" class="ghost">Сохранить папку</button>
+        </form>
+        <p id="net-box" class="muted"></p>
         <p id="models-dir" class="muted">Папка моделей координатора. Её можно сменить флагом --models-dir.</p>
         <div id="file-msg" class="bad"></div>
         <div id="files">Папка не задана.</div>
@@ -213,6 +218,18 @@
 
     function render() {
       const shown = state.fastagg_version || state.version || "";
+      const ports = state.ports || {};
+      const net = $("#net-box");
+      if (net) {
+        const bits = [];
+        if (ports.dashboard) bits.push("дашборд " + ports.dashboard);
+        if (ports.api) bits.push("API " + (ports.api_bind || "") + ":" + ports.api);
+        if (ports.rpc) bits.push("RPC " + ports.rpc);
+        if (state.adapter) bits.push("адаптер " + state.adapter);
+        net.textContent = bits.join(" · ");
+        const warns = state.route_warnings || [];
+        if (warns.length) net.textContent += " " + warns.join(" ");
+      }
       $("#header-version").textContent = shown;
       $("#app-version").textContent = shown ? "fastagg " + shown : "";
       const mismatches = (state.nodes || []).filter((node) => node.version_mismatch);
@@ -409,7 +426,11 @@
       const files = await fetch(`/api/models?ctx=${ctx}&allow_cpu=${allow}`);
       const body = await files.json();
       models = body.models || [];
-      if (body.directory) $("#models-dir").textContent = "Папка: " + body.directory;
+      if (body.directory) {
+        $("#models-dir").textContent = "Папка: " + body.directory;
+        const input = $("#models-dir-input");
+        if (input && !input.value) input.value = body.directory;
+      }
       render();
     }
 
@@ -541,6 +562,15 @@
       refresh();
     });
     $("#ctx-form").addEventListener("submit", (event) => { event.preventDefault(); refresh(); });
+    const dirForm = $("#models-dir-form");
+    if (dirForm) dirForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const path = $("#models-dir-input").value.trim();
+      const response = await fetch("/api/models/dir", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({path})});
+      const body = await response.json();
+      $("#file-msg").textContent = response.ok ? "" : (body.detail || "Папку сохранить не удалось");
+      if (response.ok) refresh();
+    });
     $("#pull-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       $("#pull-msg").textContent = "";

@@ -11,11 +11,13 @@ from fast_aggregation.coordinator.app import create_coordinator_app
 from fast_aggregation.errors import FastAggError
 from fast_aggregation.models_pull import (
     ModelPuller,
+    RemoteFile,
     choices_from_files,
     ensure_disk_space,
     files_from_tree,
     parse_hf_url,
     save_token,
+    sha_from_headers,
 )
 from tests.test_console import _service
 
@@ -98,6 +100,44 @@ def test_download_resumes_with_range_and_checks_sha256(tmp_path: Path):
     assert final["status"] == "done", final
     assert (tmp_path / "model.gguf").read_bytes() == BODY
     assert seen["range"] == "bytes=8-"
+    puller.close()
+
+
+def test_xet_etag_is_not_used_as_sha256():
+    xet = "3fe8c46a" + "ab" * 28
+    headers = httpx.Headers({"etag": xet, "x-linked-etag": DIGEST})
+    assert sha_from_headers(headers) == DIGEST
+    assert sha_from_headers(httpx.Headers({"etag": xet})) is None
+
+
+def test_checksum_mismatch_moves_partial_aside(tmp_path: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=BODY, headers={"etag": "3fe8c46a" + "ab" * 28, "x-linked-size": str(len(BODY))})
+
+    puller = ModelPuller(tmp_path, tmp_path, client=_client(handler))
+    puller.start([RemoteFile("model.gguf", "https://huggingface.co/org/repo/resolve/main/model.gguf", len(BODY), "a" * 64)])
+    puller._thread.join(timeout=5)
+    view = puller.view()
+    assert view["status"] == "error"
+    assert (tmp_path / "model.gguf.bad").is_file()
+    assert not (tmp_path / "model.gguf.partial").exists()
+    puller.close()
+
+
+def test_incomplete_body_is_retried(tmp_path: Path):
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if request.method == "GET" and calls["n"] == 1:
+            raise httpx.RemoteProtocolError("peer closed connection without sending complete message body", request=request)
+        return httpx.Response(200, content=BODY, headers={"x-linked-etag": DIGEST, "x-linked-size": str(len(BODY))})
+
+    puller = ModelPuller(tmp_path, tmp_path, client=_client(handler))
+    puller.start([RemoteFile("model.gguf", "https://huggingface.co/org/repo/resolve/main/model.gguf", len(BODY), DIGEST)])
+    puller._thread.join(timeout=8)
+    assert puller.view()["status"] == "done", puller.view()
+    assert calls["n"] >= 2
     puller.close()
 
 

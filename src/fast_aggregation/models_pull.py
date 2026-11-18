@@ -175,11 +175,31 @@ def _sha_from_lfs(value: object) -> str | None:
 
 
 def sha_from_headers(headers: httpx.Headers) -> str | None:
-    for key in ("x-linked-etag", "etag", "x-checksum-sha256"):
+    """sha256 только из ответа huggingface.co до редиректа на CDN.
+
+    ETag после редиректа у xet — это X-Xet-Hash, не sha256. Его нельзя
+    сравнивать с lfs.oid. Подходит X-Linked-ETag или X-Checksum-Sha256.
+    """
+
+    for key in ("x-linked-etag", "x-checksum-sha256"):
         found = _sha_from_lfs(headers.get(key))
         if found:
             return found
     return None
+
+
+def content_range_start(header: str) -> int | None:
+    text = (header or "").strip().lower()
+    if not text.startswith("bytes"):
+        return None
+    span = text.split(None, 1)[-1].split("/", 1)[0]
+    start = span.split("-", 1)[0].strip()
+    return int(start) if start.isdigit() else None
+
+
+def incomplete_body(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "peer closed connection" in text or "incomplete" in text or isinstance(exc, httpx.RemoteProtocolError)
 
 
 def files_from_tree(repo: str, revision: str, payload: object) -> list[RemoteFile]:
@@ -278,8 +298,8 @@ def ensure_disk_space(folder: Path, need_bytes: int | None, *, free_bytes: int |
     margin = 64 * 1024 * 1024
     if free < need_bytes + margin:
         raise FastAggError(
-            f"На диске свободно {_fmt_bytes(free)}, а модель занимает около {_fmt_bytes(need_bytes)}. "
-            "Освободите место и повторите."
+            f"На диске папки {folder} свободно {_fmt_bytes(free)}, а модель занимает около {_fmt_bytes(need_bytes)}. "
+            "Выберите другой диск или освободите место."
         )
 
 
@@ -366,6 +386,7 @@ class ModelPuller:
         self._started = 0.0
         self._active = 0.0
         self._tick = 0.0
+        self._session_bytes = 0
 
     def close(self) -> None:
         if self._owns_client:
@@ -420,6 +441,7 @@ class ModelPuller:
             self._started = time.monotonic()
             self._active = 0.0
             self._tick = self._started
+            self._session_bytes = 0
             self._thread = threading.Thread(target=self._run, args=(list(files),), name="fa-pull", daemon=True)
             self._thread.start()
         return self.view()
@@ -460,7 +482,7 @@ class ModelPuller:
         headed: list[RemoteFile] = []
         for item in files:
             try:
-                response = self.client.head(item.url, headers=_auth_headers(token), follow_redirects=True)
+                response = self.client.head(item.url, headers=_auth_headers(token), follow_redirects=False)
             except Exception as exc:
                 raise _offline(exc) from exc
             _status_error(response)
@@ -503,12 +525,20 @@ class ModelPuller:
                 self.snapshot.status = "error"
                 self.snapshot.error = str(_offline(exc))
 
+    def _park_bad(self, partial: Path) -> None:
+        if not partial.is_file():
+            return
+        bad = partial.with_name(partial.name[:-8] + ".bad") if partial.name.endswith(".partial") else partial.with_suffix(partial.suffix + ".bad")
+        bad.unlink(missing_ok=True)
+        partial.replace(bad)
+
     def _download_one(self, item: RemoteFile, carried: int) -> Path:
         relative = safe_relative(item.path)
         dest = self.folder / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         partial = dest.with_name(dest.name + ".partial")
         token = self.token()
+        attempts = 0
         while True:
             if not self.control.checkpoint():
                 raise _Cancelled()
@@ -525,53 +555,65 @@ class ModelPuller:
             try:
                 with self.client.stream("GET", item.url, headers=headers, follow_redirects=True) as response:
                     if response.status_code == 416 and partial.is_file():
-                        if item.size is not None and partial.stat().st_size != item.size:
-                            partial.unlink()
-                            continue
-                    else:
-                        _status_error(response)
-                        if response.status_code not in {200, 206}:
-                            raise FastAggError(f"Hugging Face ответил {response.status_code}.")
-                        if response.status_code == 200 and have:
-                            partial.unlink(missing_ok=True)
-                            have = 0
-                        total = _total_of(response, have) or item.size
-                        mode = "ab" if response.status_code == 206 and have else "wb"
-                        if mode == "wb":
-                            have = 0
-                        paused = False
-                        with partial.open(mode) as handle:
-                            for chunk in response.iter_bytes(CHUNK):
-                                if self.control.cancelled.is_set():
-                                    raise _Cancelled()
-                                if not self.control.running.is_set():
-                                    paused = True
-                                    break
-                                handle.write(chunk)
-                                have += len(chunk)
-                                overall = carried + have
-                                grand = (carried + total) if total is not None else None
-                                self._report(overall, grand)
-                        if paused:
-                            with self._lock:
-                                self.snapshot.status = "paused"
-                            if not self.control.checkpoint():
+                        self._park_bad(partial)
+                        continue
+                    _status_error(response)
+                    if response.status_code not in {200, 206}:
+                        raise FastAggError(f"Hugging Face ответил {response.status_code}.")
+                    if response.status_code == 206:
+                        start = content_range_start(response.headers.get("content-range") or "")
+                        if start is None or start != have:
+                            self._park_bad(partial)
+                            raise FastAggError(
+                                f"Сервер прислал Content-Range с позиции {start}, а на диске уже {have} байт. "
+                                "Кусок отложен в .bad, загрузка начнётся заново."
+                            )
+                    if response.status_code == 200 and have:
+                        partial.unlink(missing_ok=True)
+                        have = 0
+                    total = _total_of(response, have) or item.size
+                    mode = "ab" if response.status_code == 206 and have else "wb"
+                    if mode == "wb":
+                        have = 0
+                    paused = False
+                    with partial.open(mode) as handle:
+                        for chunk in response.iter_bytes(CHUNK):
+                            if self.control.cancelled.is_set():
                                 raise _Cancelled()
-                            with self._lock:
-                                self.snapshot.status = "running"
-                            continue
+                            if not self.control.running.is_set():
+                                paused = True
+                                break
+                            handle.write(chunk)
+                            have += len(chunk)
+                            self._session_bytes += len(chunk)
+                            overall = carried + have
+                            grand = (carried + total) if total is not None else None
+                            self._report(overall, grand)
+                    if paused:
+                        with self._lock:
+                            self.snapshot.status = "paused"
+                        if not self.control.checkpoint():
+                            raise _Cancelled()
+                        with self._lock:
+                            self.snapshot.status = "running"
+                        continue
             except _Cancelled:
                 raise
             except FastAggError:
                 raise
             except Exception as exc:
+                attempts += 1
+                if incomplete_body(exc) and attempts < 5:
+                    time.sleep(min(8.0, 0.4 * (2 ** (attempts - 1))))
+                    continue
                 raise _offline(exc) from exc
             if item.sha256:
                 digest = sha256_file(partial)
                 if digest != item.sha256:
+                    self._park_bad(partial)
                     raise FastAggError(
-                        "Контрольная сумма sha256 не совпала с метаданными Hugging Face. "
-                        f"Получено {digest}, ожидалось {item.sha256}."
+                        "Контрольная сумма sha256 не совпала с oid Hugging Face. "
+                        f"Получено {digest}, ожидалось {item.sha256}. Файл отложен как .bad."
                     )
             partial.replace(dest)
             return dest
@@ -585,7 +627,7 @@ class ModelPuller:
             self.snapshot.bytes_done = done
             if total is not None:
                 self.snapshot.bytes_total = total
-            speed = done / self._active if self._active > 0.3 else 0.0
+            speed = self._session_bytes / self._active if self._active > 0.3 else 0.0
             self.snapshot.speed_bps = speed
             if total is not None and speed > 0 and done <= total:
                 self.snapshot.eta_sec = (total - done) / speed

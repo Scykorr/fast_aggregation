@@ -39,6 +39,7 @@ def llama_server_argv(
     parallel: int = 1,
     gpu_layers: str = "all",
     local_node_id: str | None = None,
+    local_rpc_host: str = "127.0.0.1",
 ) -> list[str]:
     if not model_path and not hf_repo:
         raise ValueError("Нужен путь к GGUF или репозиторий Hugging Face")
@@ -46,7 +47,7 @@ def llama_server_argv(
     for device in plan.devices:
         host_for_device = device.host
         if local_node_id and device.node_id == local_node_id:
-            host_for_device = "127.0.0.1"
+            host_for_device = local_rpc_host or "127.0.0.1"
         endpoint = f"{host_for_device}:{device.rpc_port}"
         if endpoint not in endpoints:
             endpoints.append(endpoint)

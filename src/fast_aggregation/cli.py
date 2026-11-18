@@ -86,8 +86,9 @@ def _dispatch(argv: list[str] | None = None) -> int:
         "--port",
         type=int,
         default=None,
-        help="Порт дашборда. По умолчанию 47080 или порт из coordinator.json. Если занят — следующий свободный до 47099",
+        help="Порт дашборда. По умолчанию сохранённый или 47080. Если диапазон исключён VPN, берётся другой.",
     )
+    coord.add_argument("--dashboard-port", type=int, default=None, help="То же, что --port")
     coord.add_argument("--engine-port", type=int, default=ENGINE_PORT)
     coord.add_argument("--no-participate", action="store_true", help="Не отдавать ресурсы этой машины в план")
     coord.add_argument("--open", action="store_true", help="Без токена и без TLS. Только своя лаборатория")
@@ -95,7 +96,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
     coord.add_argument("--allow-download", action="store_true", help="Разрешить скачивание llama.cpp из интернета")
     coord.add_argument("--models-dir", default="", help="Локальная папка с GGUF. Интернет для моделей не нужен")
     coord.add_argument("--api-bind", default="127.0.0.1", help="Адрес Ollama-совместимого порта. 0.0.0.0 — доступ из WSL")
-    coord.add_argument("--api-port", type=int, default=11435)
+    coord.add_argument("--api-port", type=int, default=None, help="Порт API. Пусто — сохранённый или 11435")
     coord.add_argument("--api-token", default="", help="Bearer для совместимого порта. Пусто — без проверки")
 
     join = sub.add_parser("join", help="Сопрячь этот компьютер с координатором")
@@ -123,6 +124,11 @@ def _dispatch(argv: list[str] | None = None) -> int:
     roles_assign.add_argument("--model", default="", help="Путь к GGUF на выбранном узле")
     roles_assign.add_argument("--port", type=int, default=11435)
     roles_assign.add_argument("--token", default="")
+
+    ready = sub.add_parser("wait-ready", help="Ждать, пока кластер поднимет модель")
+    ready.add_argument("--timeout", type=int, default=180)
+    ready.add_argument("--port", type=int, default=0, help="Порт API. Пусто — из coordinator.json или 11435")
+    ready.add_argument("--data-dir", default="")
 
     bench = sub.add_parser("bench", help="Короткий замер скорости llama-server, около 200 токенов")
     bench.add_argument("--url", default="http://127.0.0.1:18080", help="Базовый адрес llama-server")
@@ -178,6 +184,8 @@ def _dispatch(argv: list[str] | None = None) -> int:
         return _pull(args)
     if args.command == "bench":
         return _bench(args)
+    if args.command == "wait-ready":
+        return _wait_ready(args)
     if args.command == "api":
         return _api_status(args)
     if args.command == "roles":
@@ -190,6 +198,15 @@ def _dispatch(argv: list[str] | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     _console_safe()
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] in {"coordinator", "node", "tray", "wait-ready"}:
+        import logging
+
+        from fast_aggregation.instance import configure_log
+
+        log_name = "node" if raw[0] == "node" or (raw[0] == "tray" and "node" in raw) else "coordinator"
+        path = configure_log(log_name)
+        logging.info("старт fastagg %s, журнал %s", " ".join(raw), path)
     try:
         return _dispatch(argv)
     except Exception as exc:
@@ -354,7 +371,16 @@ def _serve_node(args: argparse.Namespace) -> int:
     if not token:
         token = _prompt_for_pairing(args, data)
         membership = load_membership(data) or membership
-    service = _build_node(args, http_port=args.http_port)
+    from fast_aggregation.bindpick import lan_adapters, pick_lan_adapter
+
+    lan = pick_lan_adapter(lan_adapters(), args.advertise or ("" if args.bind in {"", "0.0.0.0"} else args.bind))
+    node_bind = args.bind if args.bind not in {"", "0.0.0.0"} else (lan.ip if lan else args.bind or "0.0.0.0")
+    service = _build_node(
+        args,
+        http_port=args.http_port,
+        bind_host=node_bind if node_bind not in {"0.0.0.0", ""} else "",
+        advertise=lan.ip if lan and not args.advertise else args.advertise,
+    )
     service.settings.allow_download = bool(args.allow_download)
     mirror = args.runtime_from.strip()
     if not mirror and membership:
@@ -376,6 +402,7 @@ def _serve_node(args: argparse.Namespace) -> int:
     discovery = DiscoveryService(
         announce,
         port=args.discovery_port,
+        bind_host=node_bind if node_bind not in {"0.0.0.0", ""} else "",
         on_announce=_remember,
         token=token or None,
     )
@@ -383,15 +410,15 @@ def _serve_node(args: argparse.Namespace) -> int:
     scheme = "http" if args.open or args.insecure_http else "https"
     ssl_kwargs = _ssl_kwargs(data, args.advertise or guess_advertise_host()) if scheme == "https" else {}
     if token:
-        line = f"Узел {service.settings.name} сопряжён и слушает {scheme}://{args.bind}:{args.http_port}"
+        line = f"Узел {service.settings.name} сопряжён и слушает {scheme}://{node_bind}:{args.http_port}"
     else:
         line = (
-            f"Узел {service.settings.name} слушает {scheme}://{args.bind}:{args.http_port}, RPC-порт {args.rpc_port}. "
+            f"Узел {service.settings.name} слушает {scheme}://{node_bind}:{args.http_port}, RPC-порт {service.settings.rpc_port}. "
             "Сопряжения ещё нет: координатор может нажать «Сопрячь», либо откройте на этом компьютере страницу узла "
             f"и введите код. Объявление в сети уже идёт."
         )
     _print_banner(line)
-    uvicorn.run(app, host=args.bind, port=args.http_port, log_level="info", **ssl_kwargs)
+    uvicorn.run(app, host=node_bind, port=args.http_port, log_level="info", **ssl_kwargs)
     return 0
 
 
@@ -473,29 +500,40 @@ def _run_coordinator(
     wait_before_close,
     write_state,
 ) -> int:
+    import logging
+
+    from fast_aggregation.bindpick import lan_adapters, load_excluded_ranges, plan_ports
+
+    logging.info("координатор: чтение настроек и выбор портов")
     saved = read_state(data)
-    saved_port = saved.get("port")
+    explicit_dash = args.dashboard_port if getattr(args, "dashboard_port", None) else args.port
+    explicit_rpc = None if args.rpc_port == RPC_PORT and saved.get("rpc_port") else args.rpc_port
     try:
-        saved_port = int(saved_port) if saved_port else None
-    except (TypeError, ValueError):
-        saved_port = None
-    wanted = preferred_port(args.port, saved_port)
-    if wanted == args.engine_port:
-        message = "Порт дашборда и порт llama-server должны различаться"
-        print(message, file=sys.stderr)
-        wait_before_close(pause)
-        return 2
-    try:
-        choice = choose_coordinator_port(wanted, avoid={args.engine_port})
+        plan = plan_ports(
+            dashboard=explicit_dash,
+            api=getattr(args, "api_port", None),
+            rpc=explicit_rpc,
+            discovery=args.discovery_port if args.discovery_port != DISCOVERY_PORT else None,
+            bind=args.bind,
+            advertise=args.advertise,
+            saved=saved,
+            excluded=load_excluded_ranges(),
+            adapters=lan_adapters(),
+        )
     except FastAggError as exc:
         _record_error(data, write_state, read_state, str(exc))
         print(exc, file=sys.stderr)
         print(f"Журнал: {log_path}", file=sys.stderr)
         wait_before_close(pause)
         return 1
+    if plan.dashboard_port == args.engine_port:
+        message = "Порт дашборда и порт llama-server должны различаться"
+        print(message, file=sys.stderr)
+        wait_before_close(pause)
+        return 2
 
     registry = NodeRegistry()
-    advertise = args.advertise or guess_advertise_host()
+    advertise = plan.advertise
     open_mode = args.open
     token = ""
     code = ""
@@ -508,22 +546,38 @@ def _run_coordinator(
         if not args.insecure_http:
             ssl_kwargs = {"ssl_certfile": str(data / "tls" / "cert.pem"), "ssl_keyfile": str(data / "tls" / "key.pem")}
     scheme = "https" if ssl_kwargs else "http"
-    dashboard_url = f"{scheme}://127.0.0.1:{choice.port}"
-    advertise_url = f"{scheme}://{advertise}:{choice.port}"
-    note = " ".join(choice.notes)
+    loopback = "127.0.0.1" if plan.dashboard_host in {"0.0.0.0", ""} else plan.dashboard_host
+    dashboard_url = f"{scheme}://{loopback}:{plan.dashboard_port}"
+    advertise_url = f"{scheme}://{advertise}:{plan.dashboard_port}"
+    note = " ".join(plan.notes)
+    models_dir = Path(args.models_dir) if args.models_dir else Path(str(saved.get("models_dir") or "")) if saved.get("models_dir") else (data / "models")
     write_state(
         data,
         {
             "pid": os.getpid(),
-            "port": choice.port,
+            "port": plan.dashboard_port,
             "scheme": scheme,
             "dashboard_url": dashboard_url,
             "advertise_url": advertise_url,
             "error": None,
             "note": note,
+            "api_port": plan.api_port,
+            "api_bind": plan.api_bind,
+            "rpc_port": plan.rpc_port,
+            "rpc_host": plan.rpc_host,
+            "discovery_port": plan.discovery_port,
+            "adapter": plan.adapter_name,
+            "advertise": advertise,
+            "models_dir": str(models_dir),
         },
     )
-    node = None if args.no_participate else _build_node(args, http_port=choice.port)
+    node = None if args.no_participate else _build_node(
+        args,
+        http_port=plan.dashboard_port,
+        rpc_port=plan.rpc_port,
+        bind_host=plan.rpc_host,
+        advertise=advertise,
+    )
     bundle = data / "trusted-bundle.pem"
     if ssl_kwargs and not bundle.is_file():
         bundle.write_text((data / "tls" / "cert.pem").read_text(encoding="utf-8"), encoding="utf-8")
@@ -544,14 +598,18 @@ def _run_coordinator(
         fingerprint=fingerprint,
     )
     service.public_host = advertise
-    service.public_port = choice.port
+    service.public_port = plan.dashboard_port
+    service.rpc_port = plan.rpc_port
+    service.discovery_port = plan.discovery_port
+    service.adapter_name = plan.adapter_name
     service.trusted_bundle = data / "trusted-bundle.pem"
     service.allow_download = bool(args.allow_download)
-    service.models_dir = Path(args.models_dir) if args.models_dir else (data / "models")
+    service.models_dir = models_dir
     service.models_dir.mkdir(parents=True, exist_ok=True)
     discovery = DiscoveryService(
         node.announce() if node is not None else None,
-        port=args.discovery_port,
+        port=plan.discovery_port,
+        bind_host=plan.rpc_host if plan.rpc_host not in {"0.0.0.0", ""} else "",
         on_announce=lambda announce, _addr: registry.upsert_announce(announce),
         token=token or None,
     )
@@ -562,8 +620,8 @@ def _run_coordinator(
             node_id="coordinator",
             name=args.name or "coordinator",
             advertise_host=advertise,
-            http_port=choice.port,
-            rpc_port=args.rpc_port,
+            http_port=plan.dashboard_port,
+            rpc_port=plan.rpc_port,
             os_name="",
             arch="",
             role="coordinator",
@@ -581,6 +639,8 @@ def _run_coordinator(
         [
             f"Дашборд: {dashboard_url}",
             f"OpenAI API: {dashboard_url}/v1",
+            f"Совместимый API: http://{plan.api_bind}:{plan.api_port}",
+            f"RPC: {plan.rpc_host}:{plan.rpc_port}",
             f"Для узлов: {advertise_url}",
             f"Сборка llama.cpp: {args.release}.",
             f"Журнал: {log_path}",
@@ -593,25 +653,25 @@ def _run_coordinator(
             [
                 f"Код сопряжения: {code}",
                 f"Отпечаток: {fingerprint}",
-                f"Ссылка: {join_uri(advertise, choice.port, code, fingerprint)}",
+                f"Ссылка: {join_uri(advertise, plan.dashboard_port, code, fingerprint)}",
                 "Управляющий канал зашифрован TLS. Поток llama.cpp RPC между машинами остаётся открытым TCP.",
             ]
         )
     else:
         lines.append("Режим --open: без токена и без TLS.")
     _print_banner("\n".join(lines))
-    config = uvicorn.Config(app, host=args.bind, port=choice.port, log_level="info", **ssl_kwargs)
+    config = uvicorn.Config(app, host=plan.dashboard_host, port=plan.dashboard_port, log_level="info", **ssl_kwargs)
     server = uvicorn.Server(config)
     holder = getattr(args, "server_holder", None)
     if isinstance(holder, dict):
         holder["server"] = server
-    service.api_bind = args.api_bind
-    service.api_port = args.api_port
-    _start_compat_api(service, args.api_bind, args.api_port, args.api_token)
+    service.api_bind = plan.api_bind
+    service.api_port = plan.api_port
+    _start_compat_api(service, plan.api_bind, plan.api_port, getattr(args, "api_token", ""))
     try:
         server.run()
     except SystemExit as exc:
-        message = f"Не удалось открыть порт {choice.port}. {format_owners(choice.port)} Журнал: {log_path}"
+        message = f"Не удалось открыть порт {plan.dashboard_port}. {format_owners(plan.dashboard_port)} Журнал: {log_path}"
         _record_error(data, write_state, read_state, message)
         print(message, file=sys.stderr)
         wait_before_close(pause)
@@ -750,6 +810,10 @@ def _filled_namespace(**overrides: object) -> argparse.Namespace:
         "no_participate": False,
         "models_dir": "",
         "http_port": NODE_HTTP_PORT,
+        "api_bind": "127.0.0.1",
+        "api_port": None,
+        "api_token": "",
+        "dashboard_port": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -914,6 +978,36 @@ def _roles(args: argparse.Namespace) -> int:
     return _api_status(argparse.Namespace(port=args.port, token=getattr(args, "token", "")))
 
 
+def ready_payload(body: dict) -> bool:
+    roles = body.get("roles") if isinstance(body.get("roles"), dict) else {}
+    llm = roles.get("llm") if isinstance(roles.get("llm"), dict) else {}
+    return bool(llm.get("available"))
+
+
+def _wait_ready(args: argparse.Namespace) -> int:
+    import time
+
+    import httpx
+
+    from fast_aggregation.instance import read_state
+
+    data = _data_dir(args)
+    port = int(args.port or read_state(data).get("api_port") or 11435)
+    deadline = time.monotonic() + max(1, int(args.timeout))
+    url = f"http://127.0.0.1:{port}/fastagg/health"
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(url, timeout=2)
+            if response.status_code == 200 and ready_payload(response.json()):
+                print(f"Кластер готов: {url}")
+                return 0
+        except (httpx.HTTPError, ValueError):
+            pass
+        time.sleep(0.4)
+    print("Кластер не поднял модель за отведённое время. Журнал координатора в %LOCALAPPDATA%\\fastagg\\logs.", file=sys.stderr)
+    return 1
+
+
 def _bench(args: argparse.Namespace) -> int:
     from fast_aggregation.cluster.bench import BenchRun, parse_timings
 
@@ -1064,15 +1158,23 @@ def _ssl_kwargs(data, advertise: str) -> dict[str, str]:
     }
 
 
-def _build_node(args: argparse.Namespace, *, http_port: int) -> NodeService:
+def _build_node(
+    args: argparse.Namespace,
+    *,
+    http_port: int,
+    rpc_port: int | None = None,
+    bind_host: str = "",
+    advertise: str = "",
+) -> NodeService:
     data = _data_dir(args)
     settings = NodeSettings(
         node_id=load_node_id(data / "node_id"),
         name=args.name or default_node_name(),
         http_port=http_port,
-        rpc_port=args.rpc_port,
-        advertise_host=args.advertise or guess_advertise_host(),
+        rpc_port=rpc_port or args.rpc_port,
+        advertise_host=advertise or args.advertise or guess_advertise_host(),
         data_dir=data,
+        bind_host=bind_host,
         preferred_backend=args.backend,
         vram_override_mb=args.vram_mb or None,
         cuda_build=args.cuda_build or None,

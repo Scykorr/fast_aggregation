@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_version_sources_agree():
     init = (ROOT / "src" / "fast_aggregation" / "__init__.py").read_text(encoding="utf-8")
     assert f'__version__ = "{__version__}"' in init
-    assert __version__ == "0.2.0"
+    assert __version__ == "0.3.0"
     project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'version = {attr = "fast_aggregation.__version__"}' in project
     assert 'version = "0.1.0"' not in project
@@ -49,13 +49,13 @@ def test_version_sources_agree():
 def test_build_metadata_and_filename(monkeypatch):
     monkeypatch.delenv("FASTAGG_BUILD", raising=False)
     monkeypatch.delenv("GITHUB_RUN_NUMBER", raising=False)
-    assert full_version() == "0.2.0"
-    assert file_version() == "0.2.0"
-    assert windows_quad() == "0.2.0.0"
+    assert full_version() == "0.3.0"
+    assert file_version() == "0.3.0"
+    assert windows_quad() == "0.3.0.0"
     monkeypatch.setenv("GITHUB_RUN_NUMBER", "14")
-    assert full_version() == "0.2.0+14"
-    assert file_version() == "0.2.0-b14"
-    assert windows_quad() == "0.2.0.14"
+    assert full_version() == "0.3.0+14"
+    assert file_version() == "0.3.0-b14"
+    assert windows_quad() == "0.3.0.14"
     assert release_version("0.2.0+14") == "0.2.0"
     assert release_version("0.2.0-b14") == "0.2.0"
     assert versions_differ("0.2.0+99", "0.2.0+1") is False
@@ -86,7 +86,7 @@ def test_registry_warns_when_the_node_release_differs():
             version="0.1.0",
         )
     )
-    registry.upsert_details("same", name="same", host="10.0.0.3", http_port=47000, version="0.2.0+3")
+    registry.upsert_details("same", name="same", host="10.0.0.3", http_port=47000, version="0.3.0+3")
     rows = {row["node_id"]: row for row in registry.public_nodes()}
     assert rows["old"]["version_mismatch"] is True
     assert "0.1.0" in rows["old"]["version_detail"]
@@ -106,9 +106,9 @@ def test_api_version_keeps_the_ollama_field(monkeypatch):
 
     with TestClient(create_compat_app(Bridge())) as client:
         body = client.get("/api/version").json()
-        assert body["version"] == "0.2.0"
-        assert body["fastagg_version"] == "0.2.0+7"
+        assert body["version"] == "0.3.0"
+        assert body["fastagg_version"] == "0.3.0+7"
         health = client.get("/fastagg/health").json()
-        assert health["version"] == "0.2.0"
-        assert health["fastagg_version"] == "0.2.0+7"
-        assert client.get("/api/health").json()["fastagg_version"] == "0.2.0+7"
+        assert health["version"] == "0.3.0"
+        assert health["fastagg_version"] == "0.3.0+7"
+        assert client.get("/api/health").json()["fastagg_version"] == "0.3.0+7"

@@ -99,6 +99,8 @@ class ServiceBridge:
                 "reranker": view["reranker"],
             },
             "failover_budget_sec": view["failover_budget_sec"],
+            "ports": view.get("ports") or {},
+            "adapter": view.get("adapter") or "",
             "recommendation": "При 503 RAG может временно вернуться к локальному Ollama (профиль compose ollama).",
         }
 

@@ -200,6 +200,38 @@ class CoordinatorService:
             adjusted.append(replace(node, resources=replace(resources, gpus=gpus, ram_available_mb=ram)))
         return adjusted
 
+    def _route_warnings(self) -> list[str]:
+        from fast_aggregation.bindpick import egress_ip, lan_adapters, route_warning
+
+        adapters = lan_adapters()
+        warnings = []
+        for node in self.registry.cluster_nodes():
+            if not node.host or node.host.startswith("127."):
+                continue
+            text = route_warning(node.host, adapters, egress_ip(node.host))
+            if text:
+                warnings.append(text)
+        return warnings
+
+    def _local_rpc_host(self) -> str:
+        if self.node is None:
+            return "127.0.0.1"
+        host = self.node.settings.bind_host
+        return host if host and host != "0.0.0.0" else "127.0.0.1"
+
+    def set_models_dir(self, path: str) -> dict:
+        from fast_aggregation.instance import read_state, write_state
+
+        folder = Path(path).expanduser()
+        if not str(folder).strip():
+            raise FastAggError("Укажите папку моделей")
+        folder.mkdir(parents=True, exist_ok=True)
+        self.models_dir = folder
+        state = read_state(self.data_dir)
+        state["models_dir"] = str(folder)
+        write_state(self.data_dir, state)
+        return {"directory": str(folder)}
+
     def integration_view(self) -> dict:
         roles = getattr(self, "_roles", {}) or {}
         ctx = int((self._launch or {}).get("ctx_size") or 4096)
@@ -221,6 +253,14 @@ class CoordinatorService:
             "queue": self.generation_queue().snapshot(),
             "failover_tries": 3,
             "failover_budget_sec": 90,
+            "ports": {
+                "dashboard": self.public_port,
+                "api": getattr(self, "api_port", 11435),
+                "api_bind": getattr(self, "api_bind", "127.0.0.1"),
+                "rpc": getattr(self, "rpc_port", None),
+                "discovery": getattr(self, "discovery_port", None),
+            },
+            "adapter": getattr(self, "adapter_name", ""),
         }
 
     def pair_code_ok(self, code: str) -> bool:
@@ -400,6 +440,7 @@ class CoordinatorService:
                 ctx_size=ctx_size,
                 parallel=parallel,
                 local_node_id=self.node.settings.node_id if self.node else None,
+                local_rpc_host=self._local_rpc_host(),
             )
         except ValueError:
             return None
@@ -457,6 +498,7 @@ class CoordinatorService:
                     ctx_size=ctx_size,
                     parallel=parallel,
                     local_node_id=self.node.settings.node_id if self.node else None,
+                    local_rpc_host=self._local_rpc_host(),
                 )
                 log_path = self.data_dir / "logs" / "llama-server.log"
                 process = self._process_factory(argv, binary.parent, log_path)
@@ -521,6 +563,9 @@ class CoordinatorService:
             "bench": self.bench_view(),
             "version": product_version(),
             "fastagg_version": full_version(),
+            "ports": self.integration_view()["ports"],
+            "adapter": getattr(self, "adapter_name", ""),
+            "route_warnings": self._route_warnings(),
             "links": [
                 {
                     "node_id": node.get("node_id"),
@@ -568,18 +613,77 @@ class CoordinatorService:
             "plan": plan_dict,
             "plan_error": error,
             "recommendations": recommendations,
+            "local": self._local_fit_rows(ctx, allow_cpu, reserve_mb),
             "bench": self.bench_view(),
         }
 
+    def model_folders(self) -> list[Path]:
+        folders = list(getattr(self, "model_dirs", None) or [])
+        if not folders and self.models_dir is not None:
+            folders = [self.models_dir]
+        unique: list[Path] = []
+        for folder in folders:
+            if folder not in unique:
+                unique.append(folder)
+        return unique
+
+    def set_model_folders(self, paths: list[str], download: str = "") -> dict:
+        from fast_aggregation.instance import read_state, write_state
+
+        folders = []
+        for raw in paths:
+            text = str(raw).strip()
+            if not text:
+                continue
+            folder = Path(text).expanduser()
+            folder.mkdir(parents=True, exist_ok=True)
+            folders.append(folder)
+        if not folders:
+            raise FastAggError("Укажите хотя бы одну папку моделей")
+        target = Path(download).expanduser() if download else folders[0]
+        if target not in folders:
+            target.mkdir(parents=True, exist_ok=True)
+            folders.append(target)
+        self.model_dirs = folders
+        self.models_dir = target
+        state = read_state(self.data_dir)
+        state["models_dirs"] = [str(folder) for folder in folders]
+        state["models_dir"] = str(target)
+        write_state(self.data_dir, state)
+        return {"directories": state["models_dirs"], "download": str(target)}
+
+    def _local_fit_rows(self, ctx: int, allow_cpu: bool, reserve_mb: int) -> list[dict]:
+        rows = []
+        for item in self.list_local_models(ctx, allow_cpu, reserve_mb):
+            rows.append(
+                {
+                    "label": item.get("name") or "GGUF",
+                    "fits": bool(item.get("fits")),
+                    "need_mib": item.get("need_mib"),
+                    "max_context": ctx if item.get("fits") else 0,
+                    "tokens_per_second": None,
+                    "local": True,
+                    "size_mib": item.get("size_mib"),
+                }
+            )
+        return rows
+
     def list_local_models(self, ctx: int, allow_cpu: bool, reserve_mb: int) -> list[dict]:
-        folder = self.models_dir
-        if folder is None or not folder.is_dir():
+        folders = [folder for folder in self.model_folders() if folder.is_dir()]
+        if not folders:
             return []
         from fast_aggregation.cluster.fit import ModelNeed, assert_fits
         from fast_aggregation.models_pull import group_local_gguf
 
         rows = []
-        files = sorted(path for path in folder.rglob("*.gguf") if path.is_file() and not path.name.endswith(".partial"))
+        files = []
+        for folder in folders:
+            files.extend(
+                path
+                for path in folder.rglob("*.gguf")
+                if path.is_file() and not path.name.endswith(".partial") and not path.name.endswith(".bad")
+            )
+        files.sort()
         for parts in group_local_gguf(files):
             primary = parts[0]
             row = self.describe_model(str(primary), ctx=ctx, allow_cpu=allow_cpu, reserve_mb=reserve_mb)

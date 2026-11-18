@@ -40,6 +40,7 @@ class NodeSettings:
     release: str = ""
     runtime_mirror: str | None = None
     allow_download: bool = False
+    bind_host: str = ""
 
 
 class NodeService:
@@ -127,7 +128,8 @@ class NodeService:
             binary = executable(folder, self.resources.os_name, "rpc")
             self._stop_locked()
             log_path = self.settings.data_dir / "logs" / "rpc-server.log"
-            argv = rpc_server_argv(binary, port=self.settings.rpc_port, cache=cache)
+            host = self.settings.bind_host or "0.0.0.0"
+            argv = rpc_server_argv(binary, host=host, port=self.settings.rpc_port, cache=cache)
             process = self._process_factory(argv, binary.parent, log_path)
             process.start()
             self._process = process

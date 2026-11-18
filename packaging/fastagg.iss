@@ -3,13 +3,13 @@
 
 #define MyAppName "fastagg"
 #ifndef MyAppVersion
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.3.0"
 #endif
 #ifndef MyAppVersionFull
-#define MyAppVersionFull "0.2.0"
+#define MyAppVersionFull "0.3.0"
 #endif
 #ifndef MyAppVersionQuad
-#define MyAppVersionQuad "0.2.0.0"
+#define MyAppVersionQuad "0.3.0.0"
 #endif
 #define MyAppExe "fastagg.exe"
 
@@ -23,7 +23,7 @@ DefaultDirName={autopf}\fastagg
 DefaultGroupName=fastagg
 OutputDir=..\dist\installer
 #ifndef SetupBaseName
-#define SetupBaseName "fastagg-setup-0.2.0"
+#define SetupBaseName "fastagg-setup-0.3.0"
 #endif
 OutputBaseFilename={#SetupBaseName}
 Compression=lzma2
@@ -42,10 +42,13 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 [Tasks]
 Name: "rolecoord"; Description: "Автозапуск в роли координатора"; GroupDescription: "Роль этого компьютера:"; Flags: exclusive
 Name: "rolenode"; Description: "Автозапуск в роли узла"; GroupDescription: "Роль этого компьютера:"; Flags: exclusive unchecked
+Name: "ragstack"; Description: "После входа поднять координатор и стек RAG"; GroupDescription: "Роль этого компьютера:"; Flags: unchecked exclusive
 Name: "desktopicon"; Description: "Ярлык на рабочем столе"; GroupDescription: "Дополнительно:"; Flags: checkedonce
 
 [Files]
 Source: "..\dist\fastagg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\integrations\rag5060\start-stack.ps1"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\integrations\rag5060\docker-compose.fastagg.yml"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "runtimes\*"; DestDir: "{%USERPROFILE}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist uninsneveruninstall
 #ifdef BundleCuda
 Source: "cuda\*.zip"; DestDir: "{%USERPROFILE}\.fast_aggregation\runtimes\b12359"; Flags: ignoreversion
@@ -61,7 +64,8 @@ Name: "{autodesktop}\fastagg"; Filename: "{app}\{#MyAppExe}"; Parameters: "tray 
 Name: "{autodesktop}\fastagg"; Filename: "{app}\{#MyAppExe}"; Parameters: "tray --role node"; Tasks: desktopicon and rolenode
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "fastagg"; ValueData: """{app}\{#MyAppExe}"" tray --role coordinator"; Tasks: rolecoord; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "fastagg"; ValueData: """{app}\{#MyAppExe}"" tray --role coordinator"; Tasks: rolecoord and not ragstack; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "fastagg"; ValueData: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""{app}\start-stack.ps1"""; Tasks: ragstack; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "fastagg"; ValueData: """{app}\{#MyAppExe}"" tray --role node"; Tasks: rolenode; Flags: uninsdeletevalue
 
 [Run]

@@ -73,6 +73,10 @@ class HfTokenBody(BaseModel):
     token: str = ""
 
 
+class ModelsDirBody(BaseModel):
+    path: str = Field(min_length=1)
+
+
 class HfPullBody(BaseModel):
     files: list[dict]
 
@@ -179,6 +183,13 @@ def create_coordinator_app(
     @app.get("/api/capacity")
     def capacity(ctx: int = 4096, allow_cpu: bool = False, reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> dict:
         return service.capacity_report(allow_cpu=allow_cpu, reserve_mb=reserve_mb, ctx=max(0, ctx))
+
+    @app.post("/api/models/dir")
+    def save_models_dir(body: ModelsDirBody) -> dict:
+        try:
+            return service.set_models_dir(body.path)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/models")
     def models(ctx: int = 4096, allow_cpu: bool = False, reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> dict:
