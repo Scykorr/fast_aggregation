@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import platform
+import sys
 import threading
 import time
 import urllib.parse
@@ -231,6 +232,114 @@ class CoordinatorService:
         state["models_dir"] = str(folder)
         write_state(self.data_dir, state)
         return {"directory": str(folder)}
+
+    def rag_state(self) -> dict:
+        from fast_aggregation.instance import read_state
+        from fast_aggregation.ragstack import windows_to_wsl
+
+        saved = read_state(self.data_dir)
+        path = str(saved.get("rag_path") or r"D:\RAG 5060")
+        return {
+            "path": path,
+            "wsl_path": windows_to_wsl(path),
+            "distro": str(saved.get("rag_distro") or "Ubuntu-24.04"),
+            "autostart": bool(saved.get("rag_autostart")),
+            "enabled": bool(saved.get("rag_cluster")),
+            "backend": str(getattr(self, "_rag_backend", "") or saved.get("rag_backend") or ""),
+            "health": str(getattr(self, "_rag_health", "") or ""),
+            "log": list(getattr(self, "_rag_log", []) or saved.get("rag_log") or []),
+        }
+
+    def save_rag_settings(self, path: str, distro: str, autostart: bool) -> dict:
+        from fast_aggregation.instance import read_state, write_state
+
+        state = read_state(self.data_dir)
+        state["rag_path"] = path.strip() or r"D:\RAG 5060"
+        state["rag_distro"] = distro.strip() or "Ubuntu-24.04"
+        state["rag_autostart"] = bool(autostart)
+        write_state(self.data_dir, state)
+        return self.rag_state()
+
+    def _rag_note(self, text: str) -> None:
+        from fast_aggregation.instance import read_state, write_state
+
+        log = list(getattr(self, "_rag_log", []))
+        log.append(text)
+        self._rag_log = log[-12:]
+        state = read_state(self.data_dir)
+        state["rag_log"] = self._rag_log
+        if getattr(self, "_rag_backend", ""):
+            state["rag_backend"] = self._rag_backend
+        write_state(self.data_dir, state)
+
+    def _rag_project(self) -> Path:
+        path = Path(self.rag_state()["path"])
+        if not path.is_dir():
+            raise FastAggError(f"Папка RAG не найдена: {path}")
+        return path
+
+    def _kit_compose(self) -> Path:
+        bundled = Path(__file__).resolve().parents[3] / "integrations" / "rag5060" / "docker-compose.fastagg.yml"
+        beside = Path(sys.executable).resolve().parent / "docker-compose.fastagg.yml" if getattr(sys, "frozen", False) else bundled
+        return beside if beside.is_file() else bundled
+
+    def rag_set_cluster(self, enabled: bool) -> dict:
+        from fast_aggregation.instance import read_state, write_state
+        from fast_aggregation.ragstack import cluster_env, disable_cluster, enable_cluster, ensure_compose
+
+        project = self._rag_project()
+        env_path = project / ".env"
+        if enabled:
+            note = ensure_compose(project, self._kit_compose())
+            token = ""
+            updates = cluster_env(getattr(self, "api_bind", "127.0.0.1"), int(getattr(self, "api_port", 11435) or 11435), token)
+            backup = enable_cluster(env_path, updates)
+            self._rag_backend = "cluster"
+            self._rag_note(f"Кластер включён. Копия .env: {backup.name}. {note}")
+        else:
+            disable_cluster(env_path)
+            self._rag_backend = "local"
+            self._rag_note("Прежние значения .env возвращены. Локальный Ollama снова в настройках.")
+        state = read_state(self.data_dir)
+        state["rag_cluster"] = bool(enabled)
+        state["rag_backend"] = self._rag_backend
+        write_state(self.data_dir, state)
+        return self.rag_state()
+
+    def rag_compose(self, profile: str, *, down: bool = False) -> dict:
+        import subprocess
+
+        from fast_aggregation.ragstack import compose_shell
+
+        project = self._rag_project()
+        view = self.rag_state()
+        script = compose_shell(view["wsl_path"], profile, down=down)
+        try:
+            completed = subprocess.run(
+                ["wsl", "-d", view["distro"], "--", "bash", "-lc", script],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+        except FileNotFoundError as exc:
+            raise FastAggError("Команда wsl не найдена. Нужен WSL2 с установленным дистрибутивом.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise FastAggError("docker compose в WSL не ответил за 180 секунд.") from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise FastAggError(detail or f"docker compose завершился с кодом {completed.returncode}")
+        self._rag_backend = "local" if profile == "ollama" and not down else ("cluster" if profile == "core" and not down else self.rag_state()["backend"])
+        action = "остановлен" if down else "запущен"
+        self._rag_note(f"Профиль {profile} {action}.")
+        return self.rag_state()
+
+    def rag_use_local(self) -> dict:
+        try:
+            self.rag_set_cluster(False)
+        except FastAggError as exc:
+            self._rag_note(str(exc))
+        return self.rag_compose("ollama", down=False)
 
     def integration_view(self) -> dict:
         roles = getattr(self, "_roles", {}) or {}

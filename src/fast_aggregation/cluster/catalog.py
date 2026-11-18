@@ -16,21 +16,43 @@ RPC_OVERHEAD_MIB = 384
 
 # Типичные плотные модели. KV-головы взяты с GQA, как у Llama 3 / Qwen2.
 PRESETS: tuple[dict, ...] = (
+    {"id": "7b-q3", "label": "7B Q3_K_M", "params_b": 7.0, "quant": "Q3_K_M", "weight_gib": 3.4, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
+    {"id": "7b-iq4", "label": "7B IQ4_XS", "params_b": 7.0, "quant": "IQ4_XS", "weight_gib": 3.8, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
+    {"id": "7b-q4s", "label": "7B Q4_K_S", "params_b": 7.0, "quant": "Q4_K_S", "weight_gib": 4.1, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
     {"id": "7b-q4", "label": "7B Q4_K_M", "params_b": 7.0, "quant": "Q4_K_M", "weight_gib": 4.4, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
+    {"id": "7b-q6", "label": "7B Q6_K", "params_b": 7.0, "quant": "Q6_K", "weight_gib": 5.4, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
     {"id": "7b-q5", "label": "7B Q5_K_M", "params_b": 7.0, "quant": "Q5_K_M", "weight_gib": 5.1, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
     {"id": "7b-q8", "label": "7B Q8_0", "params_b": 7.0, "quant": "Q8_0", "weight_gib": 7.7, "layers": 32, "embd": 4096, "heads": 32, "kv_heads": 8},
+    {"id": "13b-q3", "label": "13B Q3_K_M", "params_b": 13.0, "quant": "Q3_K_M", "weight_gib": 6.2, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
+    {"id": "13b-q4s", "label": "13B Q4_K_S", "params_b": 13.0, "quant": "Q4_K_S", "weight_gib": 7.3, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
     {"id": "13b-q4", "label": "13B Q4_K_M", "params_b": 13.0, "quant": "Q4_K_M", "weight_gib": 7.9, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
+    {"id": "13b-q6", "label": "13B Q6_K", "params_b": 13.0, "quant": "Q6_K", "weight_gib": 9.6, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
+    {"id": "13b-iq4", "label": "13B IQ4_XS", "params_b": 13.0, "quant": "IQ4_XS", "weight_gib": 6.8, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
     {"id": "13b-q5", "label": "13B Q5_K_M", "params_b": 13.0, "quant": "Q5_K_M", "weight_gib": 9.2, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
     {"id": "13b-q8", "label": "13B Q8_0", "params_b": 13.0, "quant": "Q8_0", "weight_gib": 14.0, "layers": 40, "embd": 5120, "heads": 40, "kv_heads": 40},
+    {"id": "32b-q3", "label": "32B Q3_K_M", "params_b": 32.0, "quant": "Q3_K_M", "weight_gib": 14.8, "layers": 64, "embd": 5120, "heads": 40, "kv_heads": 8},
     {"id": "32b-q4", "label": "32B Q4_K_M", "params_b": 32.0, "quant": "Q4_K_M", "weight_gib": 19.0, "layers": 64, "embd": 5120, "heads": 40, "kv_heads": 8},
+    {"id": "32b-q6", "label": "32B Q6_K", "params_b": 32.0, "quant": "Q6_K", "weight_gib": 23.2, "layers": 64, "embd": 5120, "heads": 40, "kv_heads": 8},
+    {"id": "32b-iq4", "label": "32B IQ4_XS", "params_b": 32.0, "quant": "IQ4_XS", "weight_gib": 16.3, "layers": 64, "embd": 5120, "heads": 40, "kv_heads": 8},
     {"id": "32b-q5", "label": "32B Q5_K_M", "params_b": 32.0, "quant": "Q5_K_M", "weight_gib": 23.0, "layers": 64, "embd": 5120, "heads": 40, "kv_heads": 8},
     {"id": "32b-q8", "label": "32B Q8_0", "params_b": 32.0, "quant": "Q8_0", "weight_gib": 34.0, "layers": 64, "embd": 5120, "heads": 40, "kv_heads": 8},
+    {"id": "70b-q3", "label": "70B Q3_K_M", "params_b": 70.0, "quant": "Q3_K_M", "weight_gib": 31.2, "layers": 80, "embd": 8192, "heads": 64, "kv_heads": 8},
     {"id": "70b-q4", "label": "70B Q4_K_M", "params_b": 70.0, "quant": "Q4_K_M", "weight_gib": 40.0, "layers": 80, "embd": 8192, "heads": 64, "kv_heads": 8},
+    {"id": "70b-q6", "label": "70B Q6_K", "params_b": 70.0, "quant": "Q6_K", "weight_gib": 48.8, "layers": 80, "embd": 8192, "heads": 64, "kv_heads": 8},
+    {"id": "70b-iq4", "label": "70B IQ4_XS", "params_b": 70.0, "quant": "IQ4_XS", "weight_gib": 34.4, "layers": 80, "embd": 8192, "heads": 64, "kv_heads": 8},
     {"id": "70b-q5", "label": "70B Q5_K_M", "params_b": 70.0, "quant": "Q5_K_M", "weight_gib": 47.0, "layers": 80, "embd": 8192, "heads": 64, "kv_heads": 8},
     {"id": "70b-q8", "label": "70B Q8_0", "params_b": 70.0, "quant": "Q8_0", "weight_gib": 75.0, "layers": 80, "embd": 8192, "heads": 64, "kv_heads": 8},
 )
 
-_QUANT_SPEED = {"Q4_K_M": 1.0, "Q5_K_M": 0.85, "Q8_0": 0.55}
+_QUANT_SPEED = {
+    "Q3_K_M": 1.15,
+    "IQ4_XS": 1.08,
+    "Q4_K_S": 1.05,
+    "Q4_K_M": 1.0,
+    "Q5_K_M": 0.85,
+    "Q6_K": 0.7,
+    "Q8_0": 0.55,
+}
 _REFERENCE_TPS = 40.0  # 7B Q4 на настольной CUDA-карте, ориентир, не обещание
 
 

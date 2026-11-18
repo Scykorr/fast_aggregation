@@ -3,13 +3,13 @@
 
 #define MyAppName "fastagg"
 #ifndef MyAppVersion
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "0.4.0"
 #endif
 #ifndef MyAppVersionFull
-#define MyAppVersionFull "0.3.0"
+#define MyAppVersionFull "0.4.0"
 #endif
 #ifndef MyAppVersionQuad
-#define MyAppVersionQuad "0.3.0.0"
+#define MyAppVersionQuad "0.4.0.0"
 #endif
 #define MyAppExe "fastagg.exe"
 
@@ -23,7 +23,7 @@ DefaultDirName={autopf}\fastagg
 DefaultGroupName=fastagg
 OutputDir=..\dist\installer
 #ifndef SetupBaseName
-#define SetupBaseName "fastagg-setup-0.3.0"
+#define SetupBaseName "fastagg-setup-0.4.0"
 #endif
 OutputBaseFilename={#SetupBaseName}
 Compression=lzma2

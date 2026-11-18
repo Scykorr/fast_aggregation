@@ -148,7 +148,8 @@
       <section>
         <h2>Локальные GGUF</h2>
         <form id="models-dir-form">
-          <label>Папка моделей<input id="models-dir-input" type="text" placeholder="D:\models" /></label>
+          <label>Папки моделей, по одной в строке<textarea id="models-dirs" rows="3" placeholder="C:\models&#10;D:\models"></textarea></label>
+          <label>Куда качать<input id="models-dir-input" type="text" placeholder="D:\models" /></label>
           <button type="submit" class="ghost">Сохранить папку</button>
         </form>
         <p id="net-box" class="muted"></p>
@@ -162,6 +163,24 @@
         <h2>Интеграции / API</h2>
         <p class="muted">Порт для RAG на этой же машине. По умолчанию только localhost. Из Docker в WSL используйте host.docker.internal и host-gateway.</p>
         <div id="api-box">Загрузка…</div>
+      </section>
+      <section>
+        <h2>RAG-5060</h2>
+        <p class="muted">Папка проекта на Windows. Путь для WSL считается сам. Файлы правятся только в этой папке.</p>
+        <form id="rag-form">
+          <label>Папка проекта<input id="rag-path" type="text" placeholder="D:\RAG 5060" /></label>
+          <label>Дистрибутив WSL<input id="rag-distro" type="text" placeholder="Ubuntu-24.04" /></label>
+          <label>Работать через кластер<input id="rag-cluster" type="checkbox" /></label>
+          <label>Запускать RAG вместе с агрегатором<input id="rag-auto" type="checkbox" /></label>
+          <button type="submit">Сохранить</button>
+        </form>
+        <p>
+          <button type="button" id="rag-up" class="ghost">Запустить</button>
+          <button type="button" id="rag-down" class="ghost">Остановить</button>
+          <button type="button" id="rag-local" class="ghost">Вернуть локальный Ollama</button>
+        </p>
+        <p id="rag-status" class="muted">Статус появится после сохранения.</p>
+        <pre id="rag-log"></pre>
       </section>
     </div>
     <div id="chat" class="panel">
@@ -252,7 +271,14 @@
           ["Медленный канал", capacity.slowest_mbps == null ? "н/д" : capacity.slowest_mbps + " Мбит/с"]
         ].map((item) => `<div class="card"><span class="muted">${esc(item[0])}</span><b>${esc(item[1])}</b></div>`).join("");
         $("#notes").textContent = (capacity.notes || []).join(" ");
-        const rows = (capacity.recommendations || []).map((row) => `<tr>
+        const localRows = (capacity.local || []).map((row) => `<tr>
+          <td>${esc(row.label)} <span class="muted">${row.size_mib != null ? row.size_mib + " МиБ" : ""}</span></td>
+          <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
+          <td>${mb(row.need_mib)}</td>
+          <td>файл</td>
+          <td>${row.max_context || "—"}</td>
+        </tr>`).join("");
+        const rows = localRows + (capacity.recommendations || []).map((row) => `<tr>
           <td>${esc(row.label)}</td>
           <td class="${row.fits ? "ok" : "bad"}">${row.fits ? "влезет" : "не влезет"}</td>
           <td>${mb(row.need_mib)}</td>
@@ -426,6 +452,7 @@
       const files = await fetch(`/api/models?ctx=${ctx}&allow_cpu=${allow}`);
       const body = await files.json();
       models = body.models || [];
+      if (body.directories && $("#models-dirs") && !$("#models-dirs").value) $("#models-dirs").value = body.directories.join("\n");
       if (body.directory) {
         $("#models-dir").textContent = "Папка: " + body.directory;
         const input = $("#models-dir-input");
@@ -565,8 +592,8 @@
     const dirForm = $("#models-dir-form");
     if (dirForm) dirForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const path = $("#models-dir-input").value.trim();
-      const response = await fetch("/api/models/dir", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({path})});
+      const paths = ($("#models-dirs") && $("#models-dirs").value || $("#models-dir-input").value).split(/\n+/).map((item) => item.trim()).filter(Boolean);
+      const response = await fetch("/api/models/dirs", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({paths, download: $("#models-dir-input").value.trim()})});
       const body = await response.json();
       $("#file-msg").textContent = response.ok ? "" : (body.detail || "Папку сохранить не удалось");
       if (response.ok) refresh();
@@ -723,6 +750,46 @@
       const button = document.querySelector("#copy-env");
       if (button) button.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); } catch (error) {} };
     }
+    function renderRag(info) {
+      if (!info) return;
+      const path = $("#rag-path");
+      const distro = $("#rag-distro");
+      if (path && document.activeElement !== path) path.value = info.path || "";
+      if (distro && document.activeElement !== distro) distro.value = info.distro || "";
+      const cluster = $("#rag-cluster");
+      const auto = $("#rag-auto");
+      if (cluster) cluster.checked = !!info.enabled;
+      if (auto) auto.checked = !!info.autostart;
+      const backend = info.backend === "cluster" ? "кластер fastagg" : (info.backend === "local" ? "локальный Ollama" : "не выбран");
+      const status = $("#rag-status");
+      if (status) status.textContent = "Путь в WSL: " + (info.wsl_path || "") + ". Модель RAG: " + backend + ".";
+      const log = $("#rag-log");
+      if (log) log.textContent = (info.log || []).join("\n");
+    }
+    async function ragPost(url, body) {
+      const response = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+      const payload = await response.json();
+      if (!response.ok) {
+        const log = $("#rag-log");
+        if (log) log.textContent = payload.detail || "Не удалось выполнить действие";
+        return;
+      }
+      renderRag(payload);
+    }
+    const ragForm = $("#rag-form");
+    if (ragForm) ragForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      ragPost("/api/rag", {path: $("#rag-path").value.trim(), distro: $("#rag-distro").value.trim(), autostart: $("#rag-auto").checked});
+    });
+    const ragCluster = $("#rag-cluster");
+    if (ragCluster) ragCluster.addEventListener("change", () => ragPost("/api/rag/cluster", {enabled: ragCluster.checked}));
+    const ragUp = $("#rag-up");
+    if (ragUp) ragUp.onclick = () => ragPost("/api/rag/up", {profile: "core"});
+    const ragDown = $("#rag-down");
+    if (ragDown) ragDown.onclick = () => ragPost("/api/rag/down", {profile: "core"});
+    const ragLocal = $("#rag-local");
+    if (ragLocal) ragLocal.onclick = () => ragPost("/api/rag/local", {});
+    fetch("/api/rag").then((response) => response.json()).then(renderRag).catch(() => {});
     fetch("/api/integration").then((response) => response.json()).then(renderIntegration).catch(() => {});
 
     refresh();

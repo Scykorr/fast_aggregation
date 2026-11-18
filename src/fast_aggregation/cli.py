@@ -606,6 +606,13 @@ def _run_coordinator(
     service.allow_download = bool(args.allow_download)
     service.models_dir = models_dir
     service.models_dir.mkdir(parents=True, exist_ok=True)
+    saved_dirs = saved.get("models_dirs") if isinstance(saved.get("models_dirs"), list) else []
+    if saved_dirs and not args.models_dir:
+        service.model_dirs = [Path(str(item)) for item in saved_dirs if str(item).strip()]
+    if saved.get("rag_autostart"):
+        import threading
+
+        threading.Thread(target=_start_rag_after_model, args=(service,), name="fa-rag", daemon=True).start()
     discovery = DiscoveryService(
         node.announce() if node is not None else None,
         port=plan.discovery_port,
@@ -976,6 +983,24 @@ def _roles(args: argparse.Namespace) -> int:
         print(json.dumps(response.json(), ensure_ascii=False, indent=2))
         return 0 if response.status_code < 400 else 1
     return _api_status(argparse.Namespace(port=args.port, token=getattr(args, "token", "")))
+
+
+def _start_rag_after_model(service) -> None:
+    import time
+
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        if service.phase == "running":
+            try:
+                service.rag_compose("core")
+            except FastAggError as exc:
+                service._rag_note(str(exc))
+            return
+        time.sleep(2)
+    try:
+        service.rag_use_local()
+    except FastAggError as exc:
+        service._rag_note(str(exc))
 
 
 def ready_payload(body: dict) -> bool:

@@ -77,6 +77,25 @@ class ModelsDirBody(BaseModel):
     path: str = Field(min_length=1)
 
 
+class ModelFoldersBody(BaseModel):
+    paths: list[str] = Field(default_factory=list)
+    download: str = ""
+
+
+class RagSettingsBody(BaseModel):
+    path: str = ""
+    distro: str = "Ubuntu-24.04"
+    autostart: bool = False
+
+
+class RagToggleBody(BaseModel):
+    enabled: bool = False
+
+
+class RagProfileBody(BaseModel):
+    profile: str = "core"
+
+
 class HfPullBody(BaseModel):
     files: list[dict]
 
@@ -191,10 +210,54 @@ def create_coordinator_app(
         except FastAggError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/models/dirs")
+    def save_model_dirs(body: ModelFoldersBody) -> dict:
+        try:
+            return service.set_model_folders(body.paths, body.download)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/rag")
+    def rag_state() -> dict:
+        return service.rag_state()
+
+    @app.post("/api/rag")
+    def rag_save(body: RagSettingsBody) -> dict:
+        return service.save_rag_settings(body.path, body.distro, body.autostart)
+
+    @app.post("/api/rag/cluster")
+    def rag_cluster(body: RagToggleBody) -> dict:
+        try:
+            return service.rag_set_cluster(body.enabled)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/rag/up")
+    def rag_up(body: RagProfileBody) -> dict:
+        try:
+            return service.rag_compose(body.profile, down=False)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/rag/local")
+    def rag_local() -> dict:
+        try:
+            return service.rag_use_local()
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/rag/down")
+    def rag_down(body: RagProfileBody) -> dict:
+        try:
+            return service.rag_compose(body.profile, down=True)
+        except FastAggError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/models")
     def models(ctx: int = 4096, allow_cpu: bool = False, reserve_mb: int = DEFAULT_VRAM_RESERVE_MB) -> dict:
         return {
             "directory": str(service.models_dir) if service.models_dir else None,
+            "directories": [str(folder) for folder in service.model_folders()],
             "models": service.list_local_models(ctx, allow_cpu, reserve_mb),
         }
 
